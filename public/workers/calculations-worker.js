@@ -611,7 +611,6 @@ const calculateAdfTestStatistic = (data, modelType) => {
     // k_params = 1 (constant) + 1 (y_t-1) + currentLags.
     // So, diffData.length - effectiveStartIndex (currentLags) >= k_params
     // (data.length - 1) - currentLags >= 2 + currentLags
-    // data.length - 1 >= 2 + 2 * currentLags
     // data.length - 3 >= 2 * currentLags
     // (data.length - 3) / 2 >= currentLags
     maxLagsToTest = Math.min(12, Math.floor((n - 3) / 2))
