@@ -1,0 +1,16 @@
+[package]
+name = "ols_wasm_module"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"] # Crucial for WASM output
+
+[dependencies]
+wasm-bindgen = "0.2"
+# For numerical arrays and linear algebra operations
+ndarray = { version = "0.15", features = ["rayon"] } # rayon for parallelization if needed
+ndarray-linalg = { version = "0.14", features = ["blas", "lapack"] } # Provides robust linear algebra
+# Consider "openblas-static" or "netlib-src" feature for ndarray-linalg for static linking of BLAS/LAPACK
+# depending on your build system and desired performance/bundle size.
+# For simplicity, you might start without explicit BLAS/LAPACK features and add them later.
