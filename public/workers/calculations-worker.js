@@ -59,6 +59,178 @@ const calculateZScore = (data, lookback) => {
   return zScores
 }
 
+// Helper function for matrix multiplication
+const multiplyMatrices = (A, B) => {
+  const rowsA = A.length
+  const colsA = A[0].length
+  const rowsB = B.length
+  const colsB = B[0].length
+
+  if (colsA !== rowsB) {
+    throw new Error("Matrix dimensions mismatch for multiplication.")
+  }
+
+  const result = Array(rowsA)
+    .fill(0)
+    .map(() => Array(colsB).fill(0))
+
+  for (let i = 0; i < rowsA; i++) {
+    for (let j = 0; j < colsB; j++) {
+      for (let k = 0; k < colsA; k++) {
+        result[i][j] += A[i][k] * B[k][j]
+      }
+    }
+  }
+  return result
+}
+
+// Helper function for matrix transpose
+const transposeMatrix = (matrix) => {
+  const rows = matrix.length
+  const cols = matrix[0].length
+  const result = Array(cols)
+    .fill(0)
+    .map(() => Array(rows).fill(0))
+  for (let i = 0; i < rows; i++) {
+    for (let j = 0; j < cols; j++) {
+      result[j][i] = matrix[i][j]
+    }
+  }
+  return result
+}
+
+// Gaussian elimination for matrix inversion
+const invertMatrix = (matrix) => {
+  const n = matrix.length
+  if (n === 0 || matrix[0].length !== n) {
+    throw new Error("Matrix must be square and non-empty.")
+  }
+
+  // Create an augmented matrix [A | I]
+  const augmentedMatrix = Array(n)
+    .fill(0)
+    .map((_, i) =>
+      Array(2 * n)
+        .fill(0)
+        .map((_, j) => {
+          if (j < n) return matrix[i][j]
+          return i === j - n ? 1 : 0
+        }),
+    )
+
+  // Forward elimination
+  for (let i = 0; i < n; i++) {
+    // Find pivot
+    let pivotRow = i
+    for (let k = i + 1; k < n; k++) {
+      if (Math.abs(augmentedMatrix[k][i]) > Math.abs(augmentedMatrix[pivotRow][i])) {
+        pivotRow = k
+      }
+    }
+    ;[augmentedMatrix[i], augmentedMatrix[pivotRow]] = [augmentedMatrix[pivotRow], augmentedMatrix[i]]
+
+    const pivot = augmentedMatrix[i][i]
+    if (Math.abs(pivot) < 1e-12) {
+      // Check for near-zero pivot
+      throw new Error("Matrix is singular or ill-conditioned, cannot invert.")
+    }
+
+    // Normalize row
+    for (let j = i; j < 2 * n; j++) {
+      augmentedMatrix[i][j] /= pivot
+    }
+
+    // Eliminate other rows
+    for (let k = 0; k < n; k++) {
+      if (k !== i) {
+        const factor = augmentedMatrix[k][i]
+        for (let j = i; j < 2 * n; j++) {
+          augmentedMatrix[k][j] -= factor * augmentedMatrix[i][j]
+        }
+      }
+    }
+  }
+
+  // Extract inverse matrix
+  const inverse = Array(n)
+    .fill(0)
+    .map((_, i) =>
+      Array(n)
+        .fill(0)
+        .map((_, j) => augmentedMatrix[i][j + n]),
+    )
+  return inverse
+}
+
+// Updated runMultiLinearRegression
+const runMultiLinearRegression = (y_values, x_matrix) => {
+  const numObservations = y_values.length
+  const numPredictors = x_matrix[0].length // Includes intercept
+
+  // Build X transpose * X
+  const Xt = transposeMatrix(x_matrix)
+  const XtX = multiplyMatrices(Xt, x_matrix)
+
+  // Build X transpose * Y
+  const XtY = Array(numPredictors).fill(0)
+  for (let i = 0; i < numPredictors; i++) {
+    for (let k = 0; k < numObservations; k++) {
+      XtY[i] += Xt[i][k] * y_values[k]
+    }
+  }
+
+  let XtX_inv
+  try {
+    XtX_inv = invertMatrix(XtX)
+  } catch (e) {
+    console.error("Error inverting XtX matrix:", e.message)
+    return {
+      coefficients: Array(numPredictors).fill(0),
+      stdErrors: Array(numPredictors).fill(Number.POSITIVE_INFINITY),
+      SSR: Number.POSITIVE_INFINITY,
+      nobs: numObservations,
+      nparams: numPredictors,
+    }
+  }
+
+  // Calculate coefficients (beta_hat = (XtX)^-1 * XtY)
+  const coefficients = Array(numPredictors).fill(0)
+  for (let i = 0; i < numPredictors; i++) {
+    for (let j = 0; j < numPredictors; j++) {
+      coefficients[i] += XtX_inv[i][j] * XtY[j]
+    }
+  }
+
+  // Calculate residuals
+  const residuals = []
+  for (let i = 0; i < numObservations; i++) {
+    let predictedY = 0
+    for (let j = 0; j < numPredictors; j++) {
+      predictedY += coefficients[j] * x_matrix[i][j]
+    }
+    residuals.push(y_values[i] - predictedY)
+  }
+
+  // Calculate Residual Sum of Squares (RSS)
+  const SSR = residuals.reduce((sum, r) => sum + r * r, 0)
+  // Calculate Mean Squared Error (MSE)
+  const MSE = SSR / (numObservations - numPredictors)
+
+  // Calculate standard errors of coefficients
+  const stdErrors = Array(numPredictors).fill(0)
+  for (let i = 0; i < numPredictors; i++) {
+    stdErrors[i] = Math.sqrt(MSE * XtX_inv[i][i])
+  }
+
+  return {
+    coefficients,
+    stdErrors,
+    SSR,
+    nobs: numObservations,
+    nparams: numPredictors,
+  }
+}
+
 // Matrix operations for 2x2 matrices (re-included for worker self-containment)
 const matrixMultiply2x2 = (A, B) => {
   return [
@@ -423,156 +595,101 @@ const calculateHurstExponent = (data) => {
   return hurstExponent
 }
 
-// Placeholder for ADF Test Statistic Calculation in JavaScript
-// This is a complex statistical calculation that involves OLS regression.
-// For a full implementation, you would need to perform linear regression
-// of the differenced series on its lagged values and the original series.
-// For now, this returns a dummy value. You will need to replace this
-// with a proper implementation or move the full ADF calculation to Rust.
-const calculateAdfTestStatistic = (data) => {
+// ADF Test Statistic Calculation with Optimal Lag Selection
+const calculateAdfTestStatistic = (data, modelType) => {
   const n = data.length
   if (n < 5) return 0 // ADF requires at least 5 observations
 
-  // 1. Calculate the first difference (delta_y)
-  const diffData = data.slice(1).map((val, i) => val - data[i])
+  let minLagsToTest = 0
+  let maxLagsToTest = 0
 
-  // 2. Prepare variables for regression:
-  //    Dependent variable (Y): delta_y
-  //    Independent variables (X): lagged_y (y_t-1), lagged_delta_y (delta_y_t-1), constant (intercept)
-
-  const Y = [] // delta_y
-  const X_lagged_y = [] // y_t-1
-  const X_lagged_delta_y = [] // delta_y_t-1 (for higher order lags, but we'll simplify to 1 lag for now)
-
-  // Start from the second element of diffData (which corresponds to the third element of original data)
-  // to ensure we have y_t-1 and delta_y_t-1
-  for (let i = 1; i < diffData.length; i++) {
-    Y.push(diffData[i])
-    X_lagged_y.push(data[i]) // y_t-1
-    X_lagged_delta_y.push(diffData[i - 1]) // delta_y_t-1
+  if (modelType === "ols") {
+    minLagsToTest = 0
+    // A common heuristic, ensuring enough data for regression:
+    // (data.length - 1) is diffData.length.
+    // We need at least k_params observations for regression.
+    // k_params = 1 (constant) + 1 (y_t-1) + currentLags.
+    // So, diffData.length - effectiveStartIndex (currentLags) >= k_params
+    // (data.length - 1) - currentLags >= 2 + currentLags
+    // data.length - 1 >= 2 + 2 * currentLags
+    // data.length - 3 >= 2 * currentLags
+    // (data.length - 3) / 2 >= currentLags
+    maxLagsToTest = Math.min(12, Math.floor((n - 3) / 2))
+    if (maxLagsToTest < minLagsToTest) maxLagsToTest = minLagsToTest // Ensure max is not less than min
+  } else {
+    // For other models, use a fixed, minimal lag selection
+    minLagsToTest = 0
+    maxLagsToTest = 1 // Test 0 or 1 lag
   }
 
-  if (Y.length < 3) return 0 // Need at least 3 points for regression with 2 predictors + intercept
+  let minCriterionValue = Number.POSITIVE_INFINITY
+  let optimalTestStatistic = 0 // Default to 0 if no valid regression found
 
-  // Simple Linear Regression function (for multiple variables)
-  // This is a basic OLS implementation. For production, consider a dedicated library.
-  const runMultiLinearRegression = (y_values, x_matrix) => {
-    const numObservations = y_values.length
-    const numPredictors = x_matrix[0].length // Includes intercept
+  for (let currentLags = minLagsToTest; currentLags <= maxLagsToTest; currentLags++) {
+    const diffData = data.slice(1).map((val, i) => val - data[i])
 
-    // Build X transpose * X
-    const XtX = Array(numPredictors)
-      .fill(0)
-      .map(() => Array(numPredictors).fill(0))
-    for (let i = 0; i < numPredictors; i++) {
-      for (let j = 0; j < numPredictors; j++) {
-        for (let k = 0; k < numObservations; k++) {
-          XtX[i][j] += x_matrix[k][i] * x_matrix[k][j]
-        }
+    // The regression starts from the point where all lagged terms are available.
+    // If currentLags = 0, you only need y_{t-1} (so data[1] and diffData[0]).
+    // If currentLags = 1, you need y_{t-2} and \Delta y_{t-2} etc.
+    // The effective start index for Y and X_matrix will be currentLags.
+    const effectiveStartIndex = currentLags
+    if (diffData.length <= effectiveStartIndex) {
+      continue // Not enough data for this many lags, skip this iteration
+    }
+
+    const Y = [] // Dependent variable: delta_y
+    for (let i = effectiveStartIndex; i < diffData.length; i++) {
+      Y.push(diffData[i])
+    }
+
+    const X_matrix = [] // Independent variables: [constant, y_t-1, delta_y_t-1, ..., delta_y_t-currentLags]
+    for (let i = effectiveStartIndex; i < diffData.length; i++) {
+      const row = [1, data[i]] // Constant (for alpha) and y_t-1 (for beta)
+      for (let j = 1; j <= currentLags; j++) {
+        row.push(diffData[i - j]) // Add delta_y_t-j
+      }
+      X_matrix.push(row)
+    }
+
+    const k_params = 1 + 1 + currentLags // Number of parameters in this model: constant + y_t-1 + currentLags
+    if (Y.length < k_params) {
+      continue // Not enough observations for this model complexity
+    }
+
+    const regressionResults = runMultiLinearRegression(Y, X_matrix)
+
+    if (
+      !regressionResults ||
+      typeof regressionResults.SSR === "undefined" ||
+      !regressionResults.coefficients ||
+      !regressionResults.stdErrors ||
+      regressionResults.nobs < k_params
+    ) {
+      continue // Handle cases where regression might fail or return incomplete results
+    }
+
+    const SSR = regressionResults.SSR
+    const N = regressionResults.nobs // Number of observations used in this specific regression
+    const k = regressionResults.nparams // Number of parameters in this specific regression model
+
+    // Using the common OLS-based approximation for AIC:
+    const currentAIC = N * Math.log(SSR / N) + 2 * k
+
+    if (currentAIC < minCriterionValue) {
+      minCriterionValue = currentAIC
+      // The t-statistic for beta (coefficient of y_t-1) is coefficients[1] / stdErrors[1]
+      if (regressionResults.stdErrors[1] !== 0 && isFinite(regressionResults.stdErrors[1])) {
+        optimalTestStatistic = regressionResults.coefficients[1] / regressionResults.stdErrors[1]
+      } else {
+        optimalTestStatistic = 0 // Handle division by zero or invalid std error
       }
     }
-
-    // Build X transpose * Y
-    const XtY = Array(numPredictors).fill(0)
-    for (let i = 0; i < numPredictors; i++) {
-      for (let k = 0; k < numObservations; k++) {
-        XtY[i] += x_matrix[k][i] * y_values[k]
-      }
-    }
-
-    // Calculate (XtX)^-1
-    const det =
-      XtX[0][0] * XtX[1][1] * XtX[2][2] +
-      XtX[0][1] * XtX[1][2] * XtX[2][0] +
-      XtX[0][2] * XtX[1][0] * XtX[2][1] -
-      XtX[0][2] * XtX[1][1] * XtX[2][0] -
-      XtX[0][1] * XtX[1][0] * XtX[2][2] -
-      XtX[0][0] * XtX[1][2] * XtX[2][1]
-
-    if (Math.abs(det) < 1e-9) {
-      // Matrix is singular or nearly singular, cannot invert
-      return {
-        coefficients: Array(numPredictors).fill(0),
-        stdErrors: Array(numPredictors).fill(Number.POSITIVE_INFINITY),
-      }
-    }
-
-    const invDet = 1 / det
-    const adj = [
-      [
-        XtX[1][1] * XtX[2][2] - XtX[1][2] * XtX[2][1],
-        XtX[0][2] * XtX[2][1] - XtX[0][1] * XtX[2][2],
-        XtX[0][1] * XtX[1][2] - XtX[0][2] * XtX[1][1],
-      ],
-      [
-        XtX[1][2] * XtX[2][0] - XtX[1][0] * XtX[2][2],
-        XtX[0][0] * XtX[2][2] - XtX[0][2] * XtX[2][0],
-        XtX[0][2] * XtX[1][0] - XtX[0][0] * XtX[1][2],
-      ],
-      [
-        XtX[1][0] * XtX[2][1] - XtX[1][1] * XtX[2][0],
-        XtX[0][1] * XtX[2][0] - XtX[0][0] * XtX[2][1],
-        XtX[0][0] * XtX[1][1] - XtX[0][1] * XtX[1][0],
-      ],
-    ]
-    const XtX_inv = adj.map((row) => row.map((val) => val * invDet))
-
-    // Calculate coefficients (beta_hat = (XtX)^-1 * XtY)
-    const coefficients = Array(numPredictors).fill(0)
-    for (let i = 0; i < numPredictors; i++) {
-      for (let j = 0; j < numPredictors; j++) {
-        coefficients[i] += XtX_inv[i][j] * XtY[j]
-      }
-    }
-
-    // Calculate residuals
-    const residuals = []
-    for (let i = 0; i < numObservations; i++) {
-      let predictedY = 0
-      for (let j = 0; j < numPredictors; j++) {
-        predictedY += coefficients[j] * x_matrix[i][j]
-      }
-      residuals.push(y_values[i] - predictedY)
-    }
-
-    // Calculate Residual Sum of Squares (RSS)
-    const RSS = residuals.reduce((sum, r) => sum + r * r, 0)
-    // Calculate Mean Squared Error (MSE)
-    const MSE = RSS / (numObservations - numPredictors)
-
-    // Calculate standard errors of coefficients
-    const stdErrors = Array(numPredictors).fill(0)
-    for (let i = 0; i < numPredictors; i++) {
-      stdErrors[i] = Math.sqrt(MSE * XtX_inv[i][i])
-    }
-
-    return { coefficients, stdErrors }
   }
-
-  // Construct the X matrix for regression: [constant, lagged_y, lagged_delta_y]
-  const X_matrix = []
-  for (let i = 0; i < Y.length; i++) {
-    X_matrix.push([1, X_lagged_y[i], X_lagged_delta_y[i]])
-  }
-
-  const regressionResults = runMultiLinearRegression(Y, X_matrix)
-
-  // The ADF test statistic is the t-statistic of the coefficient of the lagged original series (y_t-1)
-  // This corresponds to coefficients[1] (index 0 is intercept, index 1 is lagged_y, index 2 is lagged_delta_y)
-  const beta_lagged_y = regressionResults.coefficients[1]
-  const stdError_lagged_y = regressionResults.stdErrors[1]
-
-  if (stdError_lagged_y === 0 || isNaN(stdError_lagged_y) || !isFinite(stdError_lagged_y)) {
-    return 0 // Cannot calculate t-statistic if std error is zero or invalid
-  }
-
-  const tStatistic = beta_lagged_y / stdError_lagged_y
-
-  return tStatistic
+  return optimalTestStatistic
 }
 
 // ADF Test function (now using WASM)
-const adfTestWasm = async (data, seriesType) => {
+const adfTestWasm = async (data, seriesType, modelType) => {
   // Filter out NaN and Infinity values
   const cleanData = data.filter((val) => typeof val === "number" && isFinite(val))
 
@@ -602,8 +719,8 @@ const adfTestWasm = async (data, seriesType) => {
   try {
     await initializeWasm() // Ensure WASM is loaded
 
-    // Calculate the test statistic in JavaScript (or pass raw data to Rust if full ADF is in WASM)
-    const testStatistic = calculateAdfTestStatistic(cleanData)
+    // Calculate the test statistic in JavaScript using optimal lag selection
+    const testStatistic = calculateAdfTestStatistic(cleanData, modelType) // Pass modelType here
 
     // Call the WASM function
     const result = get_adf_p_value_and_stationarity(testStatistic)
@@ -749,10 +866,10 @@ self.onmessage = async (event) => {
       const maxZScore = validZScores.length > 0 ? Math.max(...validZScores) : 0
 
       const correlation = calculateCorrelation(pricesA.slice(0, minLength), pricesB.slice(0, minLength))
-      // Use WASM for ADF test
+      // Use WASM for ADF test, passing modelType for conditional lag selection
       const seriesForADF = modelType === "ratio" ? ratios : modelType === "euclidean" ? distances : spreads
       const seriesTypeForADF = modelType === "ratio" ? "ratios" : modelType === "euclidean" ? "distances" : "spreads"
-      const adfResults = await adfTestWasm(seriesForADF, seriesTypeForADF) // Changed to adfTestWasm
+      const adfResults = await adfTestWasm(seriesForADF, seriesTypeForADF, modelType) // Pass modelType here
       const halfLifeResult = calculateHalfLife(
         modelType === "ratio" ? ratios : modelType === "euclidean" ? distances : spreads,
       )
@@ -808,7 +925,7 @@ self.onmessage = async (event) => {
         rollingUpperBand1.push(mean + stdDev)
         rollingLowerBand1.push(mean - stdDev)
         rollingUpperBand2.push(mean + 2 * stdDev)
-        rollingLowerBand2.push(mean + 2 * stdDev)
+        rollingLowerBand2.push(mean - 2 * stdDev)
       }
 
       analysisData = {
@@ -860,6 +977,6 @@ self.onmessage = async (event) => {
 const matrixAdd2x2 = (A, B) => {
   return [
     [A[0][0] + B[0][0], A[0][1] + B[0][1]],
-    [A[1][0] + B[1][0], A[1][1] + B[1][1]], // Fixed: B[0][0] changed to B[1][0]
+    [A[1][0] + B[1][0], A[1][1] + B[1][1]],
   ]
 }
