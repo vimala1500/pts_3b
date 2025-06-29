@@ -1,46 +1,33 @@
 // public/workers/calculations-worker.js
 
-// Import your new OLS WASM module and its initialization function
-// Adjust the path based on your wasm-pack output directory
-import initOlsWasm, { run_multi_linear_regression_wasm } from "../wasm/ols_module/ols_wasm_module.js"
+// Import the WASM module and its initialization function
+// Adjust the path based on where you placed your 'pkg' folder in the public directory
+import init, { get_adf_p_value_and_stationarity } from "../wasm/adf_test.js"
 
-// ... existing WASM import for adf_test.js
-import initAdfWasm, { get_adf_p_value_and_stationarity } from "../wasm/adf_test.js"
+let wasmInitialized = false
 
-let wasmAdfInitialized = false
-let wasmOlsInitialized = false // New flag for OLS WASM
-
-// Initialize WASM modules once
+// Initialize WASM module once
 async function initializeWasm() {
-  if (!wasmAdfInitialized) {
-    self.postMessage({ type: "debug", message: "Initializing ADF WASM..." })
+  if (!wasmInitialized) {
+    self.postMessage({ type: "debug", message: "Initializing WASM..." })
     try {
-      await initAdfWasm()
-      wasmAdfInitialized = true
-      self.postMessage({ type: "debug", message: "ADF WASM initialized." })
+      await init()
+      wasmInitialized = true
+      self.postMessage({ type: "debug", message: "WASM initialized." })
     } catch (e) {
-      console.error("Failed to initialize ADF WASM:", e)
-      self.postMessage({ type: "error", message: `ADF WASM init error: ${e instanceof Error ? e.message : String(e)}` })
-      throw e
-    }
-  }
-
-  // Initialize OLS WASM module
-  if (!wasmOlsInitialized) {
-    self.postMessage({ type: "debug", message: "Initializing OLS WASM..." })
-    try {
-      await initOlsWasm()
-      wasmOlsInitialized = true
-      self.postMessage({ type: "debug", message: "OLS WASM initialized." })
-    } catch (e) {
-      console.error("Failed to initialize OLS WASM:", e)
-      self.postMessage({ type: "error", message: `OLS WASM init error: ${e instanceof Error ? e.message : String(e)}` })
+      console.error("Failed to initialize WASM:", e)
+      // Ensure we send the error message from the exception
+      self.postMessage({
+        type: "error",
+        message: `WASM initialization error: ${e instanceof Error ? e.message : String(e)}`,
+      })
+      // Re-throw the error to ensure the worker's onerror handler is also triggered
       throw e
     }
   }
 }
 
-// Ensure all WASM modules are initialized before analysis
+// Call this immediately to start loading WASM in the background
 initializeWasm()
 
 // Note: Web Workers have a different import mechanism. We'll assume utils/calculations.js is also available in the public directory or bundled.
@@ -72,6 +59,178 @@ const calculateZScore = (data, lookback) => {
   return zScores
 }
 
+// Helper function for matrix multiplication
+const multiplyMatrices = (A, B) => {
+  const rowsA = A.length
+  const colsA = A[0].length
+  const rowsB = B.length
+  const colsB = B[0].length
+
+  if (colsA !== rowsB) {
+    throw new Error("Matrix dimensions mismatch for multiplication.")
+  }
+
+  const result = Array(rowsA)
+    .fill(0)
+    .map(() => Array(colsB).fill(0))
+
+  for (let i = 0; i < rowsA; i++) {
+    for (let j = 0; j < colsB; j++) {
+      for (let k = 0; k < colsA; k++) {
+        result[i][j] += A[i][k] * B[k][j]
+      }
+    }
+  }
+  return result
+}
+
+// Helper function for matrix transpose
+const transposeMatrix = (matrix) => {
+  const rows = matrix.length
+  const cols = matrix[0].length
+  const result = Array(cols)
+    .fill(0)
+    .map(() => Array(rows).fill(0))
+  for (let i = 0; i < rows; i++) {
+    for (let j = 0; j < cols; j++) {
+      result[j][i] = matrix[i][j]
+    }
+  }
+  return result
+}
+
+// Gaussian elimination for matrix inversion
+const invertMatrix = (matrix) => {
+  const n = matrix.length
+  if (n === 0 || matrix[0].length !== n) {
+    throw new Error("Matrix must be square and non-empty.")
+  }
+
+  // Create an augmented matrix [A | I]
+  const augmentedMatrix = Array(n)
+    .fill(0)
+    .map((_, i) =>
+      Array(2 * n)
+        .fill(0)
+        .map((_, j) => {
+          if (j < n) return matrix[i][j]
+          return i === j - n ? 1 : 0
+        }),
+    )
+
+  // Forward elimination
+  for (let i = 0; i < n; i++) {
+    // Find pivot
+    let pivotRow = i
+    for (let k = i + 1; k < n; k++) {
+      if (Math.abs(augmentedMatrix[k][i]) > Math.abs(augmentedMatrix[pivotRow][i])) {
+        pivotRow = k
+      }
+    }
+    ;[augmentedMatrix[i], augmentedMatrix[pivotRow]] = [augmentedMatrix[pivotRow], augmentedMatrix[i]]
+
+    const pivot = augmentedMatrix[i][i]
+    if (Math.abs(pivot) < 1e-12) {
+      // Check for near-zero pivot
+      throw new Error("Matrix is singular or ill-conditioned, cannot invert.")
+    }
+
+    // Normalize row
+    for (let j = i; j < 2 * n; j++) {
+      augmentedMatrix[i][j] /= pivot
+    }
+
+    // Eliminate other rows
+    for (let k = 0; k < n; k++) {
+      if (k !== i) {
+        const factor = augmentedMatrix[k][i]
+        for (let j = i; j < 2 * n; j++) {
+          augmentedMatrix[k][j] -= factor * augmentedMatrix[i][j]
+        }
+      }
+    }
+  }
+
+  // Extract inverse matrix
+  const inverse = Array(n)
+    .fill(0)
+    .map((_, i) =>
+      Array(n)
+        .fill(0)
+        .map((_, j) => augmentedMatrix[i][j + n]),
+    )
+  return inverse
+}
+
+// Updated runMultiLinearRegression
+const runMultiLinearRegression = (y_values, x_matrix) => {
+  const numObservations = y_values.length
+  const numPredictors = x_matrix[0].length // Includes intercept
+
+  // Build X transpose * X
+  const Xt = transposeMatrix(x_matrix)
+  const XtX = multiplyMatrices(Xt, x_matrix)
+
+  // Build X transpose * Y
+  const XtY = Array(numPredictors).fill(0)
+  for (let i = 0; i < numPredictors; i++) {
+    for (let k = 0; k < numObservations; k++) {
+      XtY[i] += Xt[i][k] * y_values[k]
+    }
+  }
+
+  let XtX_inv
+  try {
+    XtX_inv = invertMatrix(XtX)
+  } catch (e) {
+    console.error("Error inverting XtX matrix:", e.message)
+    return {
+      coefficients: Array(numPredictors).fill(0),
+      stdErrors: Array(numPredictors).fill(Number.POSITIVE_INFINITY),
+      SSR: Number.POSITIVE_INFINITY,
+      nobs: numObservations,
+      nparams: numPredictors,
+    }
+  }
+
+  // Calculate coefficients (beta_hat = (XtX)^-1 * XtY)
+  const coefficients = Array(numPredictors).fill(0)
+  for (let i = 0; i < numPredictors; i++) {
+    for (let j = 0; j < numPredictors; j++) {
+      coefficients[i] += XtX_inv[i][j] * XtY[j]
+    }
+  }
+
+  // Calculate residuals
+  const residuals = []
+  for (let i = 0; i < numObservations; i++) {
+    let predictedY = 0
+    for (let j = 0; j < numPredictors; j++) {
+      predictedY += coefficients[j] * x_matrix[i][j]
+    }
+    residuals.push(y_values[i] - predictedY)
+  }
+
+  // Calculate Residual Sum of Squares (RSS)
+  const SSR = residuals.reduce((sum, r) => sum + r * r, 0)
+  // Calculate Mean Squared Error (MSE)
+  const MSE = SSR / (numObservations - numPredictors)
+
+  // Calculate standard errors of coefficients
+  const stdErrors = Array(numPredictors).fill(0)
+  for (let i = 0; i < numPredictors; i++) {
+    stdErrors[i] = Math.sqrt(MSE * XtX_inv[i][i])
+  }
+
+  return {
+    coefficients,
+    stdErrors,
+    SSR,
+    nobs: numObservations,
+    nparams: numPredictors,
+  }
+}
+
 // Matrix operations for 2x2 matrices (re-included for worker self-containment)
 const matrixMultiply2x2 = (A, B) => {
   return [
@@ -83,49 +242,12 @@ const matrixMultiply2x2 = (A, B) => {
 const matrixSubtract2x2 = (A, B) => {
   return [
     [A[0][0] - B[0][0], A[0][1] - B[0][1]],
-    [A[1][0] - B[0][0], A[1][1] - B[1][1]],
+    [A[1][0] - B[1][0], A[1][1] - B[1][1]],
   ]
 }
 
 const scalarInverse = (x) => {
   return Math.abs(x) < 1e-10 ? 1.0 : 1.0 / x
-}
-
-// Updated runMultiLinearRegression to use WASM
-const runMultiLinearRegression = (y_values, x_matrix) => {
-  const numObservations = y_values.length
-  const numPredictors = x_matrix[0].length // Includes intercept
-
-  // Flatten x_matrix for WASM
-  const x_matrix_flat = x_matrix.flat()
-
-  try {
-    // Call the WASM function
-    const results = run_multi_linear_regression_wasm(
-      new Float64Array(y_values),
-      new Float64Array(x_matrix_flat),
-      numObservations,
-      numPredictors,
-    )
-
-    return {
-      coefficients: Array.from(results.coefficients), // Convert Float64Array to regular Array
-      stdErrors: Array.from(results.std_errors), // Convert Float64Array to regular Array
-      SSR: results.ssr,
-      nobs: results.nobs,
-      nparams: results.nparams,
-    }
-  } catch (e) {
-    console.error("Error in OLS WASM regression:", e)
-    // Provide a graceful fallback or error handling
-    return {
-      coefficients: Array(numPredictors).fill(0),
-      stdErrors: Array(numPredictors).fill(Number.POSITIVE_INFINITY),
-      SSR: Number.POSITIVE_INFINITY,
-      nobs: numObservations,
-      nparams: numPredictors,
-    }
-  }
 }
 
 // OLS regression for hedge ratio calculation
