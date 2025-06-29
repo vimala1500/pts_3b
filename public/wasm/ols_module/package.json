@@ -1,0 +1,8 @@
+{
+  "name": "ols_wasm_module",
+  "version": "0.1.0",
+  "main": "ols_wasm_module.js",
+  "types": "ols_wasm_module.d.ts",
+  "module": "ols_wasm_module.js",
+  "files": ["ols_wasm_module_bg.wasm", "ols_wasm_module.js", "ols_wasm_module.d.ts"]
+}
