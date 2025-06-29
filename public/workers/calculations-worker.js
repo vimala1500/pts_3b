@@ -4,7 +4,7 @@
 // Adjust the path based on your wasm-pack output directory
 import initOlsWasm, { run_multi_linear_regression_wasm } from "../wasm/ols_module/ols_wasm_module.js"
 
-// Import the existing ADF WASM module and its initialization function
+// ... existing WASM import for adf_test.js
 import initAdfWasm, { get_adf_p_value_and_stationarity } from "../wasm/adf_test.js"
 
 let wasmAdfInitialized = false
@@ -20,7 +20,7 @@ async function initializeWasm() {
       self.postMessage({ type: "debug", message: "ADF WASM initialized." })
     } catch (e) {
       console.error("Failed to initialize ADF WASM:", e)
-      self.postMessage({ type: "error", message: `ADF WASM init error: ${e.message}` })
+      self.postMessage({ type: "error", message: `ADF WASM init error: ${e instanceof Error ? e.message : String(e)}` })
       throw e
     }
   }
@@ -34,7 +34,7 @@ async function initializeWasm() {
       self.postMessage({ type: "debug", message: "OLS WASM initialized." })
     } catch (e) {
       console.error("Failed to initialize OLS WASM:", e)
-      self.postMessage({ type: "error", message: `OLS WASM init error: ${e.message}` })
+      self.postMessage({ type: "error", message: `OLS WASM init error: ${e instanceof Error ? e.message : String(e)}` })
       throw e
     }
   }
@@ -43,6 +43,10 @@ async function initializeWasm() {
 // Ensure all WASM modules are initialized before analysis
 initializeWasm()
 
+// Note: Web Workers have a different import mechanism. We'll assume utils/calculations.js is also available in the public directory or bundled.
+// For simplicity in this worker, we'll re-implement or assume basic utility functions are available.
+// In a real Next.js app, you might need a build step to make shared utilities available to workers.
+// For now, I'll include a basic calculateZScore here.
 const calculateZScore = (data, lookback) => {
   if (data.length < lookback) {
     return Array(data.length).fill(0) // Not enough data for initial z-score
@@ -68,6 +72,25 @@ const calculateZScore = (data, lookback) => {
   return zScores
 }
 
+// Matrix operations for 2x2 matrices (re-included for worker self-containment)
+const matrixMultiply2x2 = (A, B) => {
+  return [
+    [A[0][0] * B[0][0] + A[0][1] * B[1][0], A[0][0] * B[0][1] + A[0][1] * B[1][1]],
+    [A[1][0] * B[0][0] + A[1][1] * B[1][0], A[1][0] * B[0][1] + A[1][1] * B[1][1]],
+  ]
+}
+
+const matrixSubtract2x2 = (A, B) => {
+  return [
+    [A[0][0] - B[0][0], A[0][1] - B[0][1]],
+    [A[1][0] - B[0][0], A[1][1] - B[1][1]],
+  ]
+}
+
+const scalarInverse = (x) => {
+  return Math.abs(x) < 1e-10 ? 1.0 : 1.0 / x
+}
+
 // Updated runMultiLinearRegression to use WASM
 const runMultiLinearRegression = (y_values, x_matrix) => {
   const numObservations = y_values.length
@@ -86,8 +109,8 @@ const runMultiLinearRegression = (y_values, x_matrix) => {
     )
 
     return {
-      coefficients: results.coefficients,
-      stdErrors: results.std_errors,
+      coefficients: Array.from(results.coefficients), // Convert Float64Array to regular Array
+      stdErrors: Array.from(results.std_errors), // Convert Float64Array to regular Array
       SSR: results.ssr,
       nobs: results.nobs,
       nparams: results.nparams,
@@ -103,25 +126,6 @@ const runMultiLinearRegression = (y_values, x_matrix) => {
       nparams: numPredictors,
     }
   }
-}
-
-// Matrix operations for 2x2 matrices (re-included for worker self-containment)
-const matrixMultiply2x2 = (A, B) => {
-  return [
-    [A[0][0] * B[0][0] + A[0][1] * B[1][0], A[0][0] * B[0][1] + A[0][1] * B[1][1]],
-    [A[1][0] * B[0][0] + A[1][1] * B[1][0], A[1][0] * B[0][1] + A[1][1] * B[1][1]],
-  ]
-}
-
-const matrixSubtract2x2 = (A, B) => {
-  return [
-    [A[0][0] - B[0][0], A[0][1] - B[0][1]],
-    [A[1][0] - B[1][0], A[1][1] - B[1][1]],
-  ]
-}
-
-const scalarInverse = (x) => {
-  return Math.abs(x) < 1e-10 ? 1.0 : 1.0 / x
 }
 
 // OLS regression for hedge ratio calculation
