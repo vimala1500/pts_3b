@@ -1,8 +1,15 @@
 {
   "name": "ols_wasm_module",
+  "type": "module",
   "version": "0.1.0",
+  "files": [
+    "ols_wasm_module_bg.wasm",
+    "ols_wasm_module.js",
+    "ols_wasm_module.d.ts"
+  ],
   "main": "ols_wasm_module.js",
   "types": "ols_wasm_module.d.ts",
-  "module": "ols_wasm_module.js",
-  "files": ["ols_wasm_module_bg.wasm", "ols_wasm_module.js", "ols_wasm_module.d.ts"]
+  "sideEffects": [
+    "./snippets/*"
+  ]
 }
