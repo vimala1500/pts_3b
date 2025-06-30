@@ -381,17 +381,18 @@ self.onmessage = async (event) => {
       // Construct analysisData with 'statistics' nested object
       analysisData = {
         modelType: modelType,
-        stockAPrices: stockAPrices.slice(0, minLength), // Pass sliced original price data back
-        stockBPrices: stockBPrices.slice(0, minLength), // Pass sliced original price data back
-        dates: dates, // Pass dates
-        spreads: spreads, // The calculated spreads/ratios/distances
-        ratios: ratios, // If model is ratio, this will be populated
-        distances: distances, // If model is euclidean, this will be populated
-        normalizedPricesA: normalizedPricesA, // If model is euclidean
-        normalizedPricesB: normalizedPricesB, // If model is euclidean
-        alphas: alphas, // If model is OLS/Kalman
-        hedgeRatios: hedgeRatios, // If model is OLS/Kalman
-        zScores: zScores, // Calculated z-scores
+        // Clone relevant data arrays to ensure they are plain JS arrays for transfer
+        stockAPrices: stockAPrices.slice(0, minLength).map(p => ({ date: p.date, close: p.close })),
+        stockBPrices: stockBPrices.slice(0, minLength).map(p => ({ date: p.date, close: p.close })),
+        dates: [...dates], // Clone array
+        spreads: [...spreads], // Clone array
+        ratios: [...ratios], // Clone array
+        distances: [...distances], // Clone array
+        normalizedPricesA: [...normalizedPricesA], // Clone array
+        normalizedPricesB: [...normalizedPricesB], // Clone array
+        alphas: [...alphas], // Clone array
+        hedgeRatios: [...hedgeRatios], // Clone array
+        zScores: [...zScores], // Clone array
 
         statistics: { // <--- All stats are now nested here!
           correlation: correlation,
@@ -406,7 +407,7 @@ self.onmessage = async (event) => {
           adfResults: {
             statistic: adfResults.statistic,
             pValue: adfResults.p_value,
-            criticalValues: adfResults.criticalValues,
+            criticalValues: Object.assign({}, adfResults.criticalValues), // Explicitly clone the criticalValues object
             isStationary: adfResults.isStationary,
           },
           halfLife: halfLifeResult.halfLife,
@@ -448,11 +449,3 @@ self.onmessage = async (event) => {
     }
   }
 };
-```
-
-**Next Steps:**
-
-1.  **Update `public/workers/calculations-worker.js`**: Copy the entire content of the `Debugged JavaScript Worker (calculations-worker.js)` Canvas and replace your existing `calculations-worker.js` file.
-2.  **Re-deploy your application**: For the changes to take effect in your browser, you'll need to re-deploy your application (e.g., commit and push to Vercel).
-
-After this update, `analysisData.statistics.correlation` should be correctly accessible in your `pair-analyzer.tsx` component, and you should see the analysis results displayed on your UI. Please provide the console output after these ste
