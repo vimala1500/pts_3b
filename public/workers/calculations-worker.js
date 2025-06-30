@@ -108,7 +108,7 @@ const calculateAdfTestStatistic = async (data, modelType) => {
         const X_matrix_flat = X_matrix_rows.flat();
         const num_rows = X_matrix_rows.length;
         const num_cols = X_matrix_rows[0].length; // k_params
-        self.postMessage({ type: "debug", message: `[ADF] Calling WASM regression for lags ${currentLags}. X_flat_length=${X_matrix_flat.length}, num_rows=${num_rows}, num_cols=${num_cols}` });
+        self.postMessage({ type: "debug", message: `[ADF] Calling WASM regression for lags ${currentLags}. Y length=${Y.length}, X_flat_length=${X_matrix_flat.length}, num_rows=${num_rows}, num_cols=${num_cols}` });
 
         let regressionResults;
         try {
@@ -159,6 +159,10 @@ const calculateAdfTestStatistic = async (data, modelType) => {
 
 // Main message handler for the worker
 self.onmessage = async (event) => {
+  // --- ADDED THIS LINE FOR INITIAL DEBUGGING ---
+  self.postMessage({ type: "debug", message: `[Worker Main] Message received, type: ${event.data.type}` });
+  // --- END ADDED LINE ---
+
   const { type, payload } = event.data;
 
   if (type === "startAnalysis") {
@@ -213,7 +217,7 @@ self.onmessage = async (event) => {
         }
       } else {
          self.postMessage({ type: "debug", message: `[Worker] Starting non-OLS spread calculation for model: ${modelType}` });
-         if (!stockAPrices || stockAPrices.length === 0 || !stockBPrices || stockBPPrices.length === 0) {
+         if (!stockAPrices || stockAPrices.length === 0 || !stockBPrices || stockBPrices.length === 0) { // Fix: Changed stockBPPrices to stockBPrices
              throw new Error("No price data for non-OLS calculation.");
          }
          const minLength = Math.min(stockAPrices.length, stockBPrices.length);
