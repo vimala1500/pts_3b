@@ -1,8 +1,6 @@
 // public/workers/calculations-worker.js
 
 // Import the WASM module and its initialization function
-// Adjust the path based on where you placed your 'pkg' folder in the public directory
-// Make sure to include run_multi_linear_regression_wasm in the import list
 import init, { get_adf_p_value_and_stationarity, run_multi_linear_regression_wasm } from "../wasm/adf_test.js"
 
 let wasmInitialized = false
@@ -47,9 +45,10 @@ const calculateZScore = (data) => {
 // ADF Test Statistic Calculation with Optimal Lag Selection
 // This function will now use the WASM-based linear regression
 const calculateAdfTestStatistic = async (data, modelType) => {
+    self.postMessage({ type: "debug", message: `[ADF] Starting calculateAdfTestStatistic for modelType: ${modelType}, data length: ${data.length}` });
     const n = data.length;
     if (n < 5) {
-        self.postMessage({ type: "debug", message: `Not enough data for ADF test (${n} points). Minimum 5 required.` });
+        self.postMessage({ type: "debug", message: `[ADF] Not enough data for ADF test (${n} points). Minimum 5 required. Returning 0.` });
         return 0;
     }
 
@@ -64,17 +63,19 @@ const calculateAdfTestStatistic = async (data, modelType) => {
         minLagsToTest = 0;
         maxLagsToTest = 1;
     }
+    self.postMessage({ type: "debug", message: `[ADF] Lags to test: min=${minLagsToTest}, max=${maxLagsToTest}` });
 
     let minCriterionValue = Number.POSITIVE_INFINITY;
     let optimalTestStatistic = 0;
 
     for (let currentLags = minLagsToTest; currentLags <= maxLagsToTest; currentLags++) {
-        const diffData = data.slice(1).map((val, i) => val - data[i]);
+        self.postMessage({ type: "debug", message: `[ADF] Testing currentLags: ${currentLags}` });
 
+        const diffData = data.slice(1).map((val, i) => val - data[i]);
         const effectiveStartIndex = currentLags;
 
         if (diffData.length <= effectiveStartIndex) {
-            self.postMessage({ type: "debug", message: `Skipping lags ${currentLags}: Not enough differenced data after lags.` });
+            self.postMessage({ type: "debug", message: `[ADF] Skipping lags ${currentLags}: Not enough differenced data after lags. diffData length: ${diffData.length}, effectiveStartIndex: ${effectiveStartIndex}` });
             continue;
         }
 
@@ -82,36 +83,40 @@ const calculateAdfTestStatistic = async (data, modelType) => {
         for (let i = effectiveStartIndex; i < diffData.length; i++) {
             Y.push(diffData[i]);
         }
+        self.postMessage({ type: "debug", message: `[ADF] Y length for lags ${currentLags}: ${Y.length}` });
 
-        const X_matrix_rows = []; // Will store rows of the X matrix
+
+        const X_matrix_rows = [];
         for (let i = effectiveStartIndex; i < diffData.length; i++) {
-            const row = [1, data[i]]; // Constant and lagged level (y_{t-1})
+            const row = [1, data[i]];
             for (let j = 1; j <= currentLags; j++) {
                 row.push(diffData[i - j]);
             }
             X_matrix_rows.push(row);
         }
+        self.postMessage({ type: "debug", message: `[ADF] X_matrix_rows length for lags ${currentLags}: ${X_matrix_rows.length}` });
 
-        const k_params = 1 + 1 + currentLags; // 1 (constant) + 1 (lagged level) + currentLags (lagged differences)
+
+        const k_params = 1 + 1 + currentLags;
 
         if (Y.length < k_params || X_matrix_rows.length === 0 || X_matrix_rows[0].length !== k_params) {
-            self.postMessage({ type: "debug", message: `Skipping lags ${currentLags}: Insufficient data or mismatched dimensions for regression. Y.length=${Y.length}, k_params=${k_params}` });
+            self.postMessage({ type: "debug", message: `[ADF] Skipping lags ${currentLags}: Insufficient data or mismatched dimensions for regression. Y.length=${Y.length}, X_rows.length=${X_matrix_rows.length}, X_rows[0].length=${X_matrix_rows[0] ? X_matrix_rows[0].length : 'N/A'}, k_params=${k_params}` });
             continue;
         }
 
-        // --- Prepare X_matrix for WASM: Flatten it ---
-        const X_matrix_flat = X_matrix_rows.flat(); // Flatten the 2D array into a 1D array
+        // Prepare X_matrix for WASM: Flatten it
+        const X_matrix_flat = X_matrix_rows.flat();
         const num_rows = X_matrix_rows.length;
         const num_cols = X_matrix_rows[0].length; // k_params
+        self.postMessage({ type: "debug", message: `[ADF] Calling WASM regression for lags ${currentLags}. X_flat_length=${X_matrix_flat.length}, num_rows=${num_rows}, num_cols=${num_cols}` });
 
-        // --- CALL THE WASM FUNCTION FOR LINEAR REGRESSION ---
         let regressionResults;
         try {
-            await initializeWasm();
-            // Pass flattened X data along with its original dimensions
+            await initializeWasm(); // Ensure WASM is initialized (already checked at worker start)
             regressionResults = await run_multi_linear_regression_wasm(Y, X_matrix_flat, num_rows, num_cols);
+            self.postMessage({ type: "debug", message: `[ADF] WASM regression completed for lags ${currentLags}.` });
         } catch (e) {
-            self.postMessage({ type: "error", message: `WASM Regression Error for lags ${currentLags}: ${e.message || String(e)}` });
+            self.postMessage({ type: "error", message: `[ADF] WASM Regression Error for lags ${currentLags}: ${e.message || String(e)}` });
             continue;
         }
 
@@ -119,8 +124,11 @@ const calculateAdfTestStatistic = async (data, modelType) => {
         const SSR = regressionResults.ssr();
         const N_obs = regressionResults.nobs();
         const K_params = regressionResults.nparams();
-        const coefficients = regressionResults.coefficients(); // This returns a Float64Array
-        const stdErrors = regressionResults.stdErrors();       // This returns a Float64Array
+        const coefficients = regressionResults.coefficients();
+        const stdErrors = regressionResults.stdErrors();
+
+        self.postMessage({ type: "debug", message: `[ADF] Results for lags ${currentLags}: SSR=${SSR}, N_obs=${N_obs}, K_params=${K_params}, Coeffs=${JSON.stringify(Array.from(coefficients))}, StdErrors=${JSON.stringify(Array.from(stdErrors))}` });
+
 
         let currentAIC;
         if (N_obs > 0 && SSR >= 0) {
@@ -128,20 +136,24 @@ const calculateAdfTestStatistic = async (data, modelType) => {
         } else {
             currentAIC = Number.POSITIVE_INFINITY;
         }
+        self.postMessage({ type: "debug", message: `[ADF] AIC for lags ${currentLags}: ${currentAIC}` });
+
 
         if (currentAIC < minCriterionValue) {
             minCriterionValue = currentAIC;
-            const beta_coefficient = coefficients[1]; // Access using index
-            const beta_std_error = stdErrors[1];     // Access using index
+            const beta_coefficient = coefficients[1];
+            const beta_std_error = stdErrors[1];
 
             if (beta_std_error !== 0 && isFinite(beta_std_error)) {
                 optimalTestStatistic = beta_coefficient / beta_std_error;
+                self.postMessage({ type: "debug", message: `[ADF] New optimal test statistic found for lags ${currentLags}: ${optimalTestStatistic}` });
             } else {
                 optimalTestStatistic = 0;
-                self.postMessage({ type: "warn", message: `Standard error for beta coefficient is zero or infinite for lags ${currentLags}. Test statistic set to 0.` });
+                self.postMessage({ type: "warn", message: `[ADF] Standard error for beta coefficient is zero or infinite for lags ${currentLags}. Test statistic set to 0.` });
             }
         }
     }
+    self.postMessage({ type: "debug", message: `[ADF] Finished calculateAdfTestStatistic. Final optimalTestStatistic: ${optimalTestStatistic}` });
     return optimalTestStatistic;
 };
 
@@ -150,54 +162,58 @@ self.onmessage = async (event) => {
   const { type, payload } = event.data;
 
   if (type === "startAnalysis") {
+    self.postMessage({ type: "debug", message: "[Worker] Received startAnalysis message." });
     const { stockAPrices, stockBPrices, modelType, windowSize } = payload;
 
     let analysisData = null;
     let error = null;
 
     try {
-      await initializeWasm(); // Ensure WASM is initialized before starting analysis
+      await initializeWasm(); // Already called globally, but safe to await again.
 
       let spreads = [];
+      self.postMessage({ type: "debug", message: `[Worker] Model type: ${modelType}` });
+
       if (modelType === "ols") {
-        if (stockAPrices.length !== stockBPrices.length || stockAPrices.length === 0) {
-            throw new Error("Stock A and B prices must have the same length and be non-empty for OLS spread calculation.");
+        if (!stockAPrices || stockAPrices.length === 0 || !stockBPrices || stockBPrices.length === 0 || stockAPrices.length !== stockBPrices.length) {
+            throw new Error("Invalid or empty stock price data for OLS spread calculation. Ensure both stocks have data of equal length.");
         }
+        self.postMessage({ type: "debug", message: `[Worker] Starting OLS spread calculation. Stock A length: ${stockAPrices.length}, Stock B length: ${stockBPrices.length}` });
 
         const minLength = Math.min(stockAPrices.length, stockBPrices.length);
         const Y_ols = stockAPrices.slice(0, minLength).map(p => p.close);
-        const X_ols_rows = stockBPrices.slice(0, minLength).map(p => [1, p.close]); // [intercept, stockB_price]
+        const X_ols_rows = stockBPrices.slice(0, minLength).map(p => [1, p.close]);
 
         if (X_ols_rows.length === 0) {
-            throw new Error("Insufficient data for OLS regression to calculate spreads.");
+            throw new Error("Insufficient data for OLS regression to calculate spreads (X_ols_rows empty).");
         }
 
-        // Flatten X_ols_rows for WASM
         const X_ols_flat = X_ols_rows.flat();
         const X_ols_num_rows = X_ols_rows.length;
-        const X_ols_num_cols = X_ols_rows[0].length; // Should be 2 ([1, priceB])
+        const X_ols_num_cols = X_ols_rows[0].length;
+
+        self.postMessage({ type: "debug", message: `[Worker] Calling WASM for OLS regression to get alpha/beta. Y_ols length: ${Y_ols.length}, X_flat length: ${X_ols_flat.length}, X_rows: ${X_ols_num_rows}, X_cols: ${X_ols_num_cols}` });
 
         try {
-            // Run the OLS regression using WASM to get alpha and beta
             const olsRegressionResults = await run_multi_linear_regression_wasm(
                 Y_ols, X_ols_flat, X_ols_num_rows, X_ols_num_cols
             );
 
-            const alpha = olsRegressionResults.coefficients()[0]; // Intercept
-            const beta = olsRegressionResults.coefficients()[1]; // Coefficient for Stock B
+            const alpha = olsRegressionResults.coefficients()[0];
+            const beta = olsRegressionResults.coefficients()[1];
 
             spreads = stockAPrices.slice(0, minLength).map((priceA, i) => {
                 const priceB = stockBPrices[i].close;
                 return priceA.close - (beta * priceB + alpha);
             });
-            self.postMessage({ type: "debug", message: `OLS beta: ${beta}, alpha: ${alpha}` });
+            self.postMessage({ type: "debug", message: `[Worker] OLS spread calculated. Beta: ${beta}, Alpha: ${alpha}, Spreads length: ${spreads.length}` });
         } catch (e) {
-            console.error("Error calculating OLS spread:", e);
+            console.error("[Worker] Error during OLS regression WASM call:", e);
             throw new Error(`Failed to calculate OLS spread using WASM: ${e.message || String(e)}`);
         }
       } else {
-         self.postMessage({ type: "debug", message: `Model type ${modelType} requested. Spread calculation for OLS only.` });
-         if (stockAPrices.length === 0 || stockBPrices.length === 0) {
+         self.postMessage({ type: "debug", message: `[Worker] Starting non-OLS spread calculation for model: ${modelType}` });
+         if (!stockAPrices || stockAPrices.length === 0 || !stockBPrices || stockBPPrices.length === 0) {
              throw new Error("No price data for non-OLS calculation.");
          }
          const minLength = Math.min(stockAPrices.length, stockBPrices.length);
@@ -206,11 +222,13 @@ self.onmessage = async (event) => {
                  const priceB = stockBPrices[i].close;
                  return priceB !== 0 ? priceA.close / priceB : 0;
              });
+             self.postMessage({ type: "debug", message: `[Worker] Ratio spreads calculated. Length: ${spreads.length}` });
          } else if (modelType === "euclidean") {
              spreads = stockAPrices.slice(0, minLength).map((priceA, i) => {
                  const priceB = stockBPrices[i].close;
                  return Math.sqrt(Math.pow(priceA.close - priceB, 2));
              });
+             self.postMessage({ type: "debug", message: `[Worker] Euclidean spreads calculated. Length: ${spreads.length}` });
          } else if (modelType === "kalman") {
              throw new Error("Kalman filter spread calculation not implemented in this example.");
          } else {
@@ -218,24 +236,27 @@ self.onmessage = async (event) => {
          }
       }
 
+      self.postMessage({ type: "debug", message: `[Worker] Calling calculateAdfTestStatistic with spreads length: ${spreads.length}` });
       const adfTestStatistic = await calculateAdfTestStatistic(spreads, modelType);
-      self.postMessage({ type: "debug", message: `Calculated ADF Test Statistic: ${adfTestStatistic}` });
+      self.postMessage({ type: "debug", message: `[Worker] Calculated ADF Test Statistic: ${adfTestStatistic}` });
 
       const adfResults = get_adf_p_value_and_stationarity(adfTestStatistic);
-      self.postMessage({ type: "debug", message: `ADF Results: ${JSON.stringify(adfResults)}` });
+      self.postMessage({ type: "debug", message: `[Worker] ADF Results: ${JSON.stringify(adfResults)}` });
 
       // Calculate other statistics needed for analysisData
       const { mean, stdDev, zScores } = calculateZScore(spreads);
+      self.postMessage({ type: "debug", message: `[Worker] Calculated Z-Scores and stats. Mean: ${mean}, StdDev: ${stdDev}, Z-Scores length: ${zScores.length}` });
+
 
       analysisData = {
         modelType: modelType,
         adfResults: {
           statistic: adfResults.statistic,
           pValue: adfResults.p_value,
-          criticalValues: adfResults.critical_values,
+          criticalValues: adfResults.critical_values(), // Access via getter
           isStationary: adfResults.is_stationary,
         },
-        correlation: 0, // You would calculate correlation separately if needed
+        correlation: 0,
         meanRatio: modelType === "ratio" ? mean : undefined,
         stdDevRatio: modelType === "ratio" ? stdDev : undefined,
         meanSpread: (modelType === "ols" || modelType === "kalman") ? mean : undefined,
@@ -258,12 +279,14 @@ self.onmessage = async (event) => {
         },
         zScores: zScores,
       };
+      self.postMessage({ type: "debug", message: "[Worker] Analysis data structured successfully." });
 
     } catch (e) {
-      console.error("Error in calculations worker:", e);
+      console.error("[Worker] Main analysis error caught:", e);
       error = e.message || "An unknown error occurred during analysis.";
     } finally {
       self.postMessage({ type: "analysisComplete", analysisData, error });
+      self.postMessage({ type: "debug", message: "[Worker] Final analysisComplete message posted." });
     }
   }
 };
