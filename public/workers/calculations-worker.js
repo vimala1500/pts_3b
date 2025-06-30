@@ -120,12 +120,12 @@ const calculateAdfTestStatistic = async (data, modelType) => {
             continue;
         }
 
-        // Access results via getter methods as per updated Rust struct
-        const SSR = regressionResults.ssr();
-        const N_obs = regressionResults.nobs();
-        const K_params = regressionResults.nparams();
-        const coefficients = regressionResults.coefficients(); // Access as a method
-        const stdErrors = regressionResults.stdErrors();       // Access as a method
+        // Access results via PROPERTIES as per updated Rust struct and adf_test.js
+        const SSR = regressionResults.ssr; // Changed from .ssr() to .ssr
+        const N_obs = regressionResults.nobs; // Changed from .nobs() to .nobs
+        const K_params = regressionResults.nparams; // Changed from .nparams() to .nparams
+        const coefficients = regressionResults.coefficients; // Changed from .coefficients() to .coefficients
+        const stdErrors = regressionResults.stdErrors;       // Changed from .stdErrors() to .stdErrors
 
         self.postMessage({ type: "debug", message: `[ADF] Results for lags ${currentLags}: SSR=${SSR}, N_obs=${N_obs}, K_params=${K_params}, Coeffs=${JSON.stringify(Array.from(coefficients))}, StdErrors=${JSON.stringify(Array.from(stdErrors))}` });
 
@@ -201,8 +201,8 @@ self.onmessage = async (event) => {
                 Y_ols, X_ols_flat, X_ols_num_rows, X_ols_num_cols
             );
 
-            const alpha = olsRegressionResults.coefficients()[0]; // Access as a method
-            const beta = olsRegressionResults.coefficients()[1];   // Access as a method
+            const alpha = olsRegressionResults.coefficients[0]; // Access as a PROPERTY
+            const beta = olsRegressionResults.coefficients[1];   // Access as a PROPERTY
 
             spreads = stockAPrices.slice(0, minLength).map((priceA, i) => {
                 const priceB = stockBPrices[i].close;
@@ -255,8 +255,8 @@ self.onmessage = async (event) => {
         adfResults: {
           statistic: adfResults.statistic,
           pValue: adfResults.p_value,
-          criticalValues: adfResults.critical_values(), // Access via getter
-          isStationary: adfResults.is_stationary,
+          criticalValues: adfResults.criticalValues, // Access via PROPERTY
+          isStationary: adfResults.isStationary, // Access via PROPERTY
         },
         correlation: 0,
         meanRatio: modelType === "ratio" ? mean : undefined,
