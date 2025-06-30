@@ -2,7 +2,8 @@
 
 // Import the WASM module and its initialization function
 // Adjust the path based on where you placed your 'pkg' folder in the public directory
-import init, { get_adf_p_value_and_stationarity } from "../wasm/adf_test.js"
+// Make sure to include run_multi_linear_regression_wasm in the import list
+import init, { get_adf_p_value_and_stationarity, run_multi_linear_regression_wasm } from "../wasm/adf_test.js"
 
 let wasmInitialized = false
 
@@ -16,12 +17,10 @@ async function initializeWasm() {
       self.postMessage({ type: "debug", message: "WASM initialized." })
     } catch (e) {
       console.error("Failed to initialize WASM:", e)
-      // Ensure we send the error message from the exception
       self.postMessage({
         type: "error",
         message: `WASM initialization error: ${e instanceof Error ? e.message : String(e)}`,
       })
-      // Re-throw the error to ensure the worker's onerror handler is also triggered
       throw e
     }
   }
@@ -30,952 +29,241 @@ async function initializeWasm() {
 // Call this immediately to start loading WASM in the background
 initializeWasm()
 
-// Note: Web Workers have a different import mechanism. We'll assume utils/calculations.js is also available in the public directory or bundled.
-// For simplicity in this worker, we'll re-implement or assume basic utility functions are available.
-// In a real Next.js app, you might need a build step to make shared utilities available to workers.
-// For now, I'll include a basic calculateZScore here.
-const calculateZScore = (data, lookback) => {
-  if (data.length < lookback) {
-    return Array(data.length).fill(0) // Not enough data for initial z-score
-  }
+// Helper function to calculate Z-Score (re-included as it might be needed by other parts)
+const calculateZScore = (data) => {
+  if (data.length === 0) return { mean: 0, stdDev: 0, zScores: [] };
+
+  const mean = data.reduce((sum, val) => sum + val, 0) / data.length;
+  // Calculate sample standard deviation (N-1)
+  const stdDev = Math.sqrt(
+    data.map((val) => (val - mean) ** 2).reduce((sum, sq) => sum + sq, 0) / (data.length > 1 ? data.length - 1 : 1)
+  );
+
+  const zScores = data.map((val) => (stdDev === 0 ? 0 : (val - mean) / stdDev));
+  return { mean, stdDev, zScores };
+};
 
-  const zScores = []
-  for (let i = 0; i < data.length; i++) {
-    const windowStart = Math.max(0, i - lookback + 1)
-    const windowData = data.slice(windowStart, i + 1)
-
-    if (windowData.length === lookback) {
-      const mean = windowData.reduce((sum, val) => sum + val, 0) / windowData.length
-      const variance =
-        windowData.length > 1
-          ? windowData.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / (windowData.length - 1) // Sample variance
-          : 0 // Handle case where windowData.length is 1
-      const stdDev = Math.sqrt(variance)
-      zScores.push(stdDev > 0 ? (data[i] - mean) / stdDev : 0)
-    } else {
-      zScores.push(0) // Not enough data in window yet
-    }
-  }
-  return zScores
-}
-
-// Helper function for matrix multiplication
-const multiplyMatrices = (A, B) => {
-  const rowsA = A.length
-  const colsA = A[0].length
-  const rowsB = B.length
-  const colsB = B[0].length
-
-  if (colsA !== rowsB) {
-    throw new Error("Matrix dimensions mismatch for multiplication.")
-  }
-
-  const result = Array(rowsA)
-    .fill(0)
-    .map(() => Array(colsB).fill(0))
-
-  for (let i = 0; i < rowsA; i++) {
-    for (let j = 0; j < colsB; j++) {
-      for (let k = 0; k < colsA; k++) {
-        result[i][j] += A[i][k] * B[k][j]
-      }
-    }
-  }
-  return result
-}
-
-// Helper function for matrix transpose
-const transposeMatrix = (matrix) => {
-  const rows = matrix.length
-  const cols = matrix[0].length
-  const result = Array(cols)
-    .fill(0)
-    .map(() => Array(rows).fill(0))
-  for (let i = 0; i < rows; i++) {
-    for (let j = 0; j < cols; j++) {
-      result[j][i] = matrix[i][j]
-    }
-  }
-  return result
-}
-
-// Gaussian elimination for matrix inversion
-const invertMatrix = (matrix) => {
-  const n = matrix.length
-  if (n === 0 || matrix[0].length !== n) {
-    throw new Error("Matrix must be square and non-empty.")
-  }
-
-  // Create an augmented matrix [A | I]
-  const augmentedMatrix = Array(n)
-    .fill(0)
-    .map((_, i) =>
-      Array(2 * n)
-        .fill(0)
-        .map((_, j) => {
-          if (j < n) return matrix[i][j]
-          return i === j - n ? 1 : 0
-        }),
-    )
-
-  // Forward elimination
-  for (let i = 0; i < n; i++) {
-    // Find pivot
-    let pivotRow = i
-    for (let k = i + 1; k < n; k++) {
-      if (Math.abs(augmentedMatrix[k][i]) > Math.abs(augmentedMatrix[pivotRow][i])) {
-        pivotRow = k
-      }
-    }
-    ;[augmentedMatrix[i], augmentedMatrix[pivotRow]] = [augmentedMatrix[pivotRow], augmentedMatrix[i]]
-
-    const pivot = augmentedMatrix[i][i]
-    if (Math.abs(pivot) < 1e-12) {
-      // Check for near-zero pivot
-      throw new Error("Matrix is singular or ill-conditioned, cannot invert.")
-    }
-
-    // Normalize row
-    for (let j = i; j < 2 * n; j++) {
-      augmentedMatrix[i][j] /= pivot
-    }
-
-    // Eliminate other rows
-    for (let k = 0; k < n; k++) {
-      if (k !== i) {
-        const factor = augmentedMatrix[k][i]
-        for (let j = i; j < 2 * n; j++) {
-          augmentedMatrix[k][j] -= factor * augmentedMatrix[i][j]
-        }
-      }
-    }
-  }
-
-  // Extract inverse matrix
-  const inverse = Array(n)
-    .fill(0)
-    .map((_, i) =>
-      Array(n)
-        .fill(0)
-        .map((_, j) => augmentedMatrix[i][j + n]),
-    )
-  return inverse
-}
-
-// Updated runMultiLinearRegression
-const runMultiLinearRegression = (y_values, x_matrix) => {
-  const numObservations = y_values.length
-  const numPredictors = x_matrix[0].length // Includes intercept
-
-  // Build X transpose * X
-  const Xt = transposeMatrix(x_matrix)
-  const XtX = multiplyMatrices(Xt, x_matrix)
-
-  // Build X transpose * Y
-  const XtY = Array(numPredictors).fill(0)
-  for (let i = 0; i < numPredictors; i++) {
-    for (let k = 0; k < numObservations; k++) {
-      XtY[i] += Xt[i][k] * y_values[k]
-    }
-  }
-
-  let XtX_inv
-  try {
-    XtX_inv = invertMatrix(XtX)
-  } catch (e) {
-    console.error("Error inverting XtX matrix:", e.message)
-    return {
-      coefficients: Array(numPredictors).fill(0),
-      stdErrors: Array(numPredictors).fill(Number.POSITIVE_INFINITY),
-      SSR: Number.POSITIVE_INFINITY,
-      nobs: numObservations,
-      nparams: numPredictors,
-    }
-  }
-
-  // Calculate coefficients (beta_hat = (XtX)^-1 * XtY)
-  const coefficients = Array(numPredictors).fill(0)
-  for (let i = 0; i < numPredictors; i++) {
-    for (let j = 0; j < numPredictors; j++) {
-      coefficients[i] += XtX_inv[i][j] * XtY[j]
-    }
-  }
-
-  // Calculate residuals
-  const residuals = []
-  for (let i = 0; i < numObservations; i++) {
-    let predictedY = 0
-    for (let j = 0; j < numPredictors; j++) {
-      predictedY += coefficients[j] * x_matrix[i][j]
-    }
-    residuals.push(y_values[i] - predictedY)
-  }
-
-  // Calculate Residual Sum of Squares (RSS)
-  const SSR = residuals.reduce((sum, r) => sum + r * r, 0)
-  // Calculate Mean Squared Error (MSE)
-  const MSE = SSR / (numObservations - numPredictors)
-
-  // Calculate standard errors of coefficients
-  const stdErrors = Array(numPredictors).fill(0)
-  for (let i = 0; i < numPredictors; i++) {
-    stdErrors[i] = Math.sqrt(MSE * XtX_inv[i][i])
-  }
-
-  return {
-    coefficients,
-    stdErrors,
-    SSR,
-    nobs: numObservations,
-    nparams: numPredictors,
-  }
-}
-
-// Matrix operations for 2x2 matrices (re-included for worker self-containment)
-const matrixMultiply2x2 = (A, B) => {
-  return [
-    [A[0][0] * B[0][0] + A[0][1] * B[1][0], A[0][0] * B[0][1] + A[0][1] * B[1][1]],
-    [A[1][0] * B[0][0] + A[1][1] * B[1][0], A[1][0] * B[0][1] + A[1][1] * B[1][1]],
-  ]
-}
-
-const matrixSubtract2x2 = (A, B) => {
-  return [
-    [A[0][0] - B[0][0], A[0][1] - B[0][1]],
-    [A[1][0] - B[1][0], A[1][1] - B[1][1]],
-  ]
-}
-
-const scalarInverse = (x) => {
-  return Math.abs(x) < 1e-10 ? 1.0 : 1.0 / x
-}
-
-// OLS regression for hedge ratio calculation
-const calculateHedgeRatio = (pricesA, pricesB, currentIndex, windowSize) => {
-  const startIdx = Math.max(0, currentIndex - windowSize + 1)
-  const endIdx = currentIndex + 1
-
-  let sumA = 0,
-    sumB = 0,
-    sumAB = 0,
-    sumB2 = 0
-  let count = 0
-
-  for (let i = startIdx; i < endIdx; i++) {
-    const priceA = typeof pricesA[i].close === "string" ? Number.parseFloat(pricesA[i].close) : pricesA[i].close
-    const priceB = typeof pricesB[i].close === "string" ? Number.parseFloat(pricesB[i].close) : pricesB[i].close
-
-    if (isNaN(priceA) || isNaN(priceB)) {
-      continue
-    }
-
-    sumA += priceA
-    sumB += priceB
-    sumAB += priceA * priceB
-    sumB2 += priceB * priceB
-    count++
-  }
-
-  if (count === 0 || count * sumB2 - sumB * sumB === 0) {
-    return { beta: 1, alpha: 0 }
-  }
-
-  const numerator = count * sumAB - sumA * sumB
-  const denominator = count * sumB2 - sumB * sumB
-  const beta = numerator / denominator
-  const alpha = sumA / count - beta * (sumB / count)
-
-  return { beta, alpha }
-}
-
-// Kalman filter implementation
-const kalmanFilter = (pricesA, pricesB, processNoise, measurementNoise, initialLookback) => {
-  const n = pricesA.length
-
-  if (n < initialLookback) {
-    return { hedgeRatios: Array(n).fill(1), alphas: Array(n).fill(0) }
-  }
-
-  let sumA = 0,
-    sumB = 0,
-    sumAB = 0,
-    sumB2 = 0
-  for (let i = 0; i < initialLookback; i++) {
-    const priceA = typeof pricesA[i].close === "string" ? Number.parseFloat(pricesA[i].close) : pricesA[i].close
-    const priceB = typeof pricesB[i].close === "string" ? Number.parseFloat(pricesB[i].close) : pricesB[i].close
-    sumA += priceA
-    sumB += priceB
-    sumAB += priceA * priceB
-    sumB2 += priceB * priceB
-  }
-
-  const meanA = sumA / initialLookback
-  const meanB = sumB / initialLookback
-  const numerator = initialLookback * sumAB - sumA * sumB
-  const denominator = initialLookback * sumB2 - sumB * sumB
-  const initialBeta = Math.abs(denominator) > 1e-10 ? numerator / denominator : 1.0
-  const initialAlpha = meanA - initialBeta * meanB
-
-  let residualSumSquares = 0
-  for (let i = 0; i < initialLookback; i++) {
-    const priceA = typeof pricesA[i].close === "string" ? Number.parseFloat(pricesA[i].close) : pricesA[i].close
-    const priceB = typeof pricesB[i].close === "string" ? Number.parseFloat(pricesB[i].close) : pricesB[i].close
-    const predicted = initialAlpha + initialBeta * priceB
-    const residual = priceA - predicted
-    residualSumSquares += residual * residual
-  }
-  const adaptiveR = residualSumSquares / (initialLookback - 2)
-
-  let x = [initialAlpha, initialBeta]
-  let P = [
-    [1000, 0],
-    [0, 1000],
-  ]
-  const Q = [
-    [processNoise, 0],
-    [0, processNoise],
-  ]
-
-  const hedgeRatios = []
-  const alphas = []
-
-  for (let i = 0; i < initialLookback; i++) {
-    hedgeRatios.push(initialBeta)
-    alphas.push(initialAlpha)
-  }
-
-  for (let i = initialLookback; i < n; i++) {
-    const priceA = typeof pricesA[i].close === "string" ? Number.parseFloat(pricesA[i].close) : pricesA[i].close
-    const priceB = typeof pricesB[i].close === "string" ? Number.parseFloat(pricesB[i].close) : pricesB[i].close
-
-    const x_pred = [...x]
-    const P_pred = matrixAdd2x2(P, Q)
-
-    const H_t = [1, priceB]
-    const predicted_y = H_t[0] * x_pred[0] + H_t[1] * x_pred[1]
-    const innovation = priceA - predicted_y
-
-    const H_P_pred = [P_pred[0][0] * H_t[0] + P_pred[0][1] * H_t[1], P_pred[1][0] * H_t[0] + P_pred[1][1] * H_t[1]]
-    const innovation_covariance = H_P_pred[0] * H_t[0] + H_P_pred[1] * H_t[1] + adaptiveR
-
-    const P_pred_H_T = [P_pred[0][0] * H_t[0] + P_pred[0][1] * H_t[1], P_pred[1][0] * H_t[0] + P_pred[1][1] * H_t[1]]
-    const K = [
-      P_pred_H_T[0] * scalarInverse(innovation_covariance),
-      P_pred_H_T[1] * scalarInverse(innovation_covariance),
-    ]
-
-    x = [x_pred[0] + K[0] * innovation, x_pred[1] + K[1] * innovation]
-
-    const K_H = [
-      [K[0] * H_t[0], K[0] * H_t[1]],
-      [K[1] * H_t[0], K[1] * H_t[1]],
-    ]
-    const I_minus_KH = matrixSubtract2x2(
-      [
-        [1, 0],
-        [0, 1],
-      ],
-      K_H,
-    )
-    P = matrixMultiply2x2(I_minus_KH, P_pred)
-
-    alphas.push(x[0])
-    hedgeRatios.push(x[1])
-  }
-
-  return { hedgeRatios, alphas }
-}
-
-const calculateCorrelation = (pricesA, pricesB) => {
-  const n = pricesA.length
-  let sumA = 0,
-    sumB = 0,
-    sumAB = 0,
-    sumA2 = 0,
-    sumB2 = 0
-
-  for (let i = 0; i < n; i++) {
-    sumA += pricesA[i].close
-    sumB += pricesB[i].close
-    sumAB += pricesA[i].close * pricesB[i].close // Corrected: A * B
-    sumA2 += pricesA[i].close * pricesA[i].close
-    sumB2 += pricesB[i].close * pricesB[i].close
-  }
-
-  const numerator = n * sumAB - sumA * sumB
-  const denominator = Math.sqrt((n * sumA2 - sumA * sumA) * (n * sumB2 - sumB * sumB))
-
-  return denominator === 0 ? 0 : numerator / denominator
-}
-
-const calculateHalfLife = (spreads) => {
-  const n = spreads.length
-  if (n < 20) return { halfLife: 0, isValid: false }
-
-  const y = []
-  const x = []
-
-  for (let i = 1; i < n; i++) {
-    y.push(spreads[i] - spreads[i - 1])
-    x.push(spreads[i - 1])
-  }
-
-  let sumX = 0,
-    sumY = 0,
-    sumXY = 0,
-    sumX2 = 0
-  for (let i = 0; i < y.length; i++) {
-    sumX += x[i]
-    sumY += y[i]
-    sumXY += x[i] * y[i]
-    sumX2 += x[i] * x[i]
-  }
-
-  const beta = (y.length * sumXY - sumX * sumY) / (y.length * sumX2 - sumX * sumX)
-  const halfLife = -Math.log(2) / beta
-
-  return {
-    halfLife: beta < 0 ? halfLife : 0,
-    isValid: halfLife > 0 && halfLife < 252,
-  }
-}
-
-const calculateRollingHalfLife = (data, windowSize) => {
-  const result = []
-  if (data.length < windowSize + 1) {
-    return Array(data.length).fill(null)
-  }
-
-  for (let i = 0; i < data.length; i++) {
-    if (i < windowSize - 1) {
-      result.push(null)
-      continue
-    }
-
-    const windowData = data.slice(Math.max(0, i - windowSize + 1), i + 1)
-    const mean = windowData.reduce((sum, val) => sum + val, 0) / windowData.length
-
-    const y = []
-    const x = []
-
-    for (let j = 1; j < windowData.length; j++) {
-      y.push(windowData[j] - windowData[j - 1])
-      x.push(windowData[j - 1] - mean)
-    }
-
-    let sumX = 0,
-      sumY = 0,
-      sumXY = 0,
-      sumX2 = 0
-    for (let j = 0; j < y.length; j++) {
-      sumX += x[j]
-      sumY += y[j]
-      sumXY += x[j] * y[j]
-      sumX2 += x[j] * x[j]
-    }
-
-    if (sumX2 === 0) {
-      result.push(null)
-      continue
-    }
-
-    const beta = (y.length * sumXY - sumX * sumY) / (y.length * sumX2 - sumX * sumX)
-    const halfLife = beta < 0 ? -Math.log(2) / beta : null
-
-    if (halfLife !== null && halfLife > 0) {
-      result.push(halfLife)
-    } else {
-      result.push(null)
-    }
-  }
-  return result
-}
-
-const calculatePracticalTradeHalfLife = (zScores, entryThreshold = 2.0, exitThreshold = 0.5) => {
-  const tradeCycles = []
-  let inTrade = false
-  let entryDay = 0
-  let entryDirection = ""
-
-  for (let i = 0; i < zScores.length; i++) {
-    const currentZScore = zScores[i]
-
-    if (!inTrade && Math.abs(currentZScore) >= entryThreshold) {
-      inTrade = true
-      entryDay = i
-      entryDirection = currentZScore > 0 ? "positive" : "negative"
-    }
-
-    if (inTrade) {
-      if (
-        (entryDirection === "positive" && currentZScore <= exitThreshold) ||
-        (entryDirection === "negative" && currentZScore >= -exitThreshold)
-      ) {
-        const cycleLength = i - entryDay + 1
-        tradeCycles.push(cycleLength)
-        inTrade = false
-      }
-    }
-  }
-
-  if (tradeCycles.length === 0) {
-    return {
-      tradeCycleLength: 0,
-      isValid: false,
-      sampleSize: 0,
-      successRate: 0,
-      medianCycleLength: 0,
-    }
-  }
-
-  const avgCycleLength = tradeCycles.reduce((sum, val) => sum + val, 0) / tradeCycles.length
-  const totalPotentialTrades = tradeCycles.length + (inTrade ? 1 : 0)
-  const successRate = totalPotentialTrades > 0 ? tradeCycles.length / totalPotentialTrades : 0
-
-  const sortedCycles = [...tradeCycles].sort((a, b) => a - b)
-  const medianCycleLength = sortedCycles[Math.floor(sortedCycles.length / 2)]
-
-  return {
-    tradeCycleLength: avgCycleLength,
-    medianCycleLength,
-    successRate,
-    sampleSize: tradeCycles.length,
-    isValid: tradeCycles.length >= 5 && successRate > 0.7,
-  }
-}
-
-const calculateHurstExponent = (data) => {
-  const n = data.length
-  if (n < 100) return 0.5
-
-  const maxLag = Math.min(100, Math.floor(n / 2))
-  const lags = []
-  const rs = []
-
-  for (let lag = 10; lag <= maxLag; lag += 10) {
-    const rsValues = []
-
-    for (let i = 0; i < n - lag; i += lag) {
-      const series = data.slice(i, i + lag)
-      const mean = series.reduce((sum, val) => sum + val, 0) / lag
-
-      const cumDevs = []
-      let sum = 0
-      for (let j = 0; j < series.length; j++) {
-        sum += series[j] - mean
-        cumDevs.push(sum)
-      }
-
-      const range = Math.max(...cumDevs) - Math.min(...cumDevs)
-      const stdDev = Math.sqrt(series.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / lag)
-
-      if (stdDev > 0) {
-        rsValues.push(range / stdDev)
-      }
-    }
-
-    if (rsValues.length > 0) {
-      lags.push(Math.log(lag))
-      rs.push(Math.log(rsValues.reduce((sum, val) => sum + val, 0) / rsValues.length))
-    }
-  }
-
-  let sumX = 0,
-    sumY = 0,
-    sumXY = 0,
-    sumX2 = 0
-  for (let i = 0; i < lags.length; i++) {
-    sumX += lags[i]
-    sumY += rs[i]
-    sumXY += lags[i] * rs[i]
-    sumX2 += lags[i] * lags[i]
-  }
-
-  const hurstExponent = (lags.length * sumXY - sumX * sumY) / (lags.length * sumX2 - sumX * sumX)
-  return hurstExponent
-}
 
 // ADF Test Statistic Calculation with Optimal Lag Selection
-const calculateAdfTestStatistic = (data, modelType) => {
-  const n = data.length
-  if (n < 5) return 0 // ADF requires at least 5 observations
-
-  let minLagsToTest = 0
-  let maxLagsToTest = 0
-
-  if (modelType === "ols") {
-    minLagsToTest = 0
-    // A common heuristic, ensuring enough data for regression:
-    // (data.length - 1) is diffData.length.
-    // We need at least k_params observations for regression.
-    // k_params = 1 (constant) + 1 (y_t-1) + currentLags.
-    // So, diffData.length - effectiveStartIndex (currentLags) >= k_params
-    // (data.length - 1) - currentLags >= 2 + currentLags
-    // data.length - 3 >= 2 * currentLags
-    // (data.length - 3) / 2 >= currentLags
-    maxLagsToTest = Math.min(12, Math.floor((n - 3) / 2))
-    if (maxLagsToTest < minLagsToTest) maxLagsToTest = minLagsToTest // Ensure max is not less than min
-  } else {
-    // For other models, use a fixed, minimal lag selection
-    minLagsToTest = 0
-    maxLagsToTest = 1 // Test 0 or 1 lag
-  }
-
-  let minCriterionValue = Number.POSITIVE_INFINITY
-  let optimalTestStatistic = 0 // Default to 0 if no valid regression found
-
-  for (let currentLags = minLagsToTest; currentLags <= maxLagsToTest; currentLags++) {
-    const diffData = data.slice(1).map((val, i) => val - data[i])
-
-    // The regression starts from the point where all lagged terms are available.
-    // If currentLags = 0, you only need y_{t-1} (so data[1] and diffData[0]).
-    // If currentLags = 1, you need y_{t-2} and \Delta y_{t-2} etc.
-    // The effective start index for Y and X_matrix will be currentLags.
-    const effectiveStartIndex = currentLags
-    if (diffData.length <= effectiveStartIndex) {
-      continue // Not enough data for this many lags, skip this iteration
+// This function will now use the WASM-based linear regression
+const calculateAdfTestStatistic = async (data, modelType) => {
+    const n = data.length;
+    if (n < 5) {
+        self.postMessage({ type: "debug", message: `Not enough data for ADF test (${n} points). Minimum 5 required.` });
+        return 0;
     }
 
-    const Y = [] // Dependent variable: delta_y
-    for (let i = effectiveStartIndex; i < diffData.length; i++) {
-      Y.push(diffData[i])
+    let minLagsToTest = 0;
+    let maxLagsToTest = 0;
+
+    if (modelType === "ols") {
+        minLagsToTest = 0;
+        maxLagsToTest = Math.min(12, Math.floor((n - 3) / 2));
+        if (maxLagsToTest < minLagsToTest) maxLagsToTest = minLagsToTest;
+    } else {
+        minLagsToTest = 0;
+        maxLagsToTest = 1;
     }
 
-    const X_matrix = [] // Independent variables: [constant, y_t-1, delta_y_t-1, ..., delta_y_t-currentLags]
-    for (let i = effectiveStartIndex; i < diffData.length; i++) {
-      const row = [1, data[i]] // Constant (for alpha) and y_t-1 (for beta)
-      for (let j = 1; j <= currentLags; j++) {
-        row.push(diffData[i - j]) // Add delta_y_t-j
-      }
-      X_matrix.push(row)
+    let minCriterionValue = Number.POSITIVE_INFINITY;
+    let optimalTestStatistic = 0;
+
+    for (let currentLags = minLagsToTest; currentLags <= maxLagsToTest; currentLags++) {
+        const diffData = data.slice(1).map((val, i) => val - data[i]);
+
+        const effectiveStartIndex = currentLags;
+
+        if (diffData.length <= effectiveStartIndex) {
+            self.postMessage({ type: "debug", message: `Skipping lags ${currentLags}: Not enough differenced data after lags.` });
+            continue;
+        }
+
+        const Y = [];
+        for (let i = effectiveStartIndex; i < diffData.length; i++) {
+            Y.push(diffData[i]);
+        }
+
+        const X_matrix_rows = []; // Will store rows of the X matrix
+        for (let i = effectiveStartIndex; i < diffData.length; i++) {
+            const row = [1, data[i]]; // Constant and lagged level (y_{t-1})
+            for (let j = 1; j <= currentLags; j++) {
+                row.push(diffData[i - j]);
+            }
+            X_matrix_rows.push(row);
+        }
+
+        const k_params = 1 + 1 + currentLags; // 1 (constant) + 1 (lagged level) + currentLags (lagged differences)
+
+        if (Y.length < k_params || X_matrix_rows.length === 0 || X_matrix_rows[0].length !== k_params) {
+            self.postMessage({ type: "debug", message: `Skipping lags ${currentLags}: Insufficient data or mismatched dimensions for regression. Y.length=${Y.length}, k_params=${k_params}` });
+            continue;
+        }
+
+        // --- Prepare X_matrix for WASM: Flatten it ---
+        const X_matrix_flat = X_matrix_rows.flat(); // Flatten the 2D array into a 1D array
+        const num_rows = X_matrix_rows.length;
+        const num_cols = X_matrix_rows[0].length; // k_params
+
+        // --- CALL THE WASM FUNCTION FOR LINEAR REGRESSION ---
+        let regressionResults;
+        try {
+            await initializeWasm();
+            // Pass flattened X data along with its original dimensions
+            regressionResults = await run_multi_linear_regression_wasm(Y, X_matrix_flat, num_rows, num_cols);
+        } catch (e) {
+            self.postMessage({ type: "error", message: `WASM Regression Error for lags ${currentLags}: ${e.message || String(e)}` });
+            continue;
+        }
+
+        // Access results via getter methods as per updated Rust struct
+        const SSR = regressionResults.ssr();
+        const N_obs = regressionResults.nobs();
+        const K_params = regressionResults.nparams();
+        const coefficients = regressionResults.coefficients(); // This returns a Float64Array
+        const stdErrors = regressionResults.stdErrors();       // This returns a Float64Array
+
+        let currentAIC;
+        if (N_obs > 0 && SSR >= 0) {
+            currentAIC = N_obs * Math.log(SSR / N_obs) + 2 * K_params;
+        } else {
+            currentAIC = Number.POSITIVE_INFINITY;
+        }
+
+        if (currentAIC < minCriterionValue) {
+            minCriterionValue = currentAIC;
+            const beta_coefficient = coefficients[1]; // Access using index
+            const beta_std_error = stdErrors[1];     // Access using index
+
+            if (beta_std_error !== 0 && isFinite(beta_std_error)) {
+                optimalTestStatistic = beta_coefficient / beta_std_error;
+            } else {
+                optimalTestStatistic = 0;
+                self.postMessage({ type: "warn", message: `Standard error for beta coefficient is zero or infinite for lags ${currentLags}. Test statistic set to 0.` });
+            }
+        }
     }
-
-    const k_params = 1 + 1 + currentLags // Number of parameters in this model: constant + y_t-1 + currentLags
-    if (Y.length < k_params) {
-      continue // Not enough observations for this model complexity
-    }
-
-    const regressionResults = runMultiLinearRegression(Y, X_matrix)
-
-    if (
-      !regressionResults ||
-      typeof regressionResults.SSR === "undefined" ||
-      !regressionResults.coefficients ||
-      !regressionResults.stdErrors ||
-      regressionResults.nobs < k_params
-    ) {
-      continue // Handle cases where regression might fail or return incomplete results
-    }
-
-    const SSR = regressionResults.SSR
-    const N = regressionResults.nobs // Number of observations used in this specific regression
-    const k = regressionResults.nparams // Number of parameters in this specific regression model
-
-    // Using the common OLS-based approximation for AIC:
-    const currentAIC = N * Math.log(SSR / N) + 2 * k
-
-    if (currentAIC < minCriterionValue) {
-      minCriterionValue = currentAIC
-      // The t-statistic for beta (coefficient of y_t-1) is coefficients[1] / stdErrors[1]
-      if (regressionResults.stdErrors[1] !== 0 && isFinite(regressionResults.stdErrors[1])) {
-        optimalTestStatistic = regressionResults.coefficients[1] / regressionResults.stdErrors[1]
-      } else {
-        optimalTestStatistic = 0 // Handle division by zero or invalid std error
-      }
-    }
-  }
-  return optimalTestStatistic
-}
-
-// ADF Test function (now using WASM)
-const adfTestWasm = async (data, seriesType, modelType) => {
-  // Filter out NaN and Infinity values
-  const cleanData = data.filter((val) => typeof val === "number" && isFinite(val))
-
-  self.postMessage({
-    type: "debug",
-    message: `ADF Test: Received ${data.length} raw data points for ${seriesType}. Cleaned to ${cleanData.length} points.`,
-  })
-  if (cleanData.length > 0) {
-    self.postMessage({
-      type: "debug",
-      message: `ADF Test: Sample of clean data (first 5): ${cleanData.slice(0, 5).join(", ")}`,
-    })
-    self.postMessage({
-      type: "debug",
-      message: `ADF Test: Sample of clean data (last 5): ${cleanData.slice(-5).join(", ")}`,
-    })
-  }
-
-  if (cleanData.length < 5) {
-    self.postMessage({
-      type: "debug",
-      message: `ADF Test: Not enough clean data points (${cleanData.length}) for ADF test. Returning default.`,
-    })
-    return { statistic: 0, pValue: 1, criticalValues: { "1%": 0, "5%": 0, "10%": 0 }, isStationary: false }
-  }
-
-  try {
-    await initializeWasm() // Ensure WASM is loaded
-
-    // Calculate the test statistic in JavaScript using optimal lag selection
-    const testStatistic = calculateAdfTestStatistic(cleanData, modelType) // Pass modelType here
-
-    // Call the WASM function
-    const result = get_adf_p_value_and_stationarity(testStatistic)
-
-    self.postMessage({ type: "debug", message: `ADF Test: WASM result: ${JSON.stringify(result)}` })
-
-    return {
-      statistic: result.statistic,
-      pValue: result.p_value,
-      criticalValues: result.critical_values,
-      isStationary: result.is_stationary,
-    }
-  } catch (error) {
-    console.error("Error running ADF test with WASM:", error)
-    self.postMessage({ type: "error", message: `ADF Test WASM error: ${error.message}` })
-    return { statistic: 0, pValue: 1, criticalValues: { "1%": 0, "5%": 0, "10%": 0 }, isStationary: false }
-  }
-}
+    return optimalTestStatistic;
+};
 
 // Main message handler for the worker
 self.onmessage = async (event) => {
-  // Corrected destructuring: pricesA and pricesB are inside event.data.data
-  const {
-    type,
-    data: { pricesA, pricesB },
-    params,
-    selectedPair,
-  } = event.data
+  const { type, payload } = event.data;
 
-  if (type === "runAnalysis") {
-    // Ensure WASM is ready before proceeding with analysis
-    await initializeWasm() // This will await the existing promise if not resolved yet
+  if (type === "startAnalysis") {
+    const { stockAPrices, stockBPrices, modelType, windowSize } = payload;
 
-    const {
-      modelType,
-      ratioLookbackWindow,
-      olsLookbackWindow,
-      kalmanProcessNoise,
-      kalmanMeasurementNoise,
-      kalmanInitialLookback,
-      euclideanLookbackWindow,
-      zScoreLookback,
-      entryThreshold,
-      exitThreshold,
-    } = params
-
-    let analysisData = null
-    let error = ""
+    let analysisData = null;
+    let error = null;
 
     try {
-      const minLength = Math.min(pricesA.length, pricesB.length)
-      const dates = pricesA.map((d) => d.date).slice(0, minLength)
-      const stockAPrices = pricesA.map((d) => d.close).slice(0, minLength)
-      const stockBPrices = pricesB.map((d) => d.close).slice(0, minLength)
+      await initializeWasm(); // Ensure WASM is initialized before starting analysis
 
-      let spreads = []
-      let ratios = []
-      let distances = []
-      let hedgeRatios = []
-      let alphas = []
-      let zScores = []
-      let rollingHalfLifes = []
-      let meanValue = 0
-      let stdDevValue = 0
+      let spreads = [];
+      if (modelType === "ols") {
+        if (stockAPrices.length !== stockBPrices.length || stockAPrices.length === 0) {
+            throw new Error("Stock A and B prices must have the same length and be non-empty for OLS spread calculation.");
+        }
 
-      if (modelType === "ratio") {
-        ratios = stockAPrices.map((priceA, i) => priceA / stockBPrices[i])
-        zScores = calculateZScore(ratios, ratioLookbackWindow)
-        rollingHalfLifes = calculateRollingHalfLife(ratios, ratioLookbackWindow)
-        // For ratio model, calculate mean/std dev on the entire series
-        if (ratios.length > 0) {
-          meanValue = ratios.reduce((sum, val) => sum + val, 0) / ratios.length
-          const stdDevDenominator = ratios.length > 1 ? ratios.length - 1 : ratios.length
-          stdDevValue = Math.sqrt(
-            ratios.reduce((sum, val) => sum + Math.pow(val - meanValue, 2), 0) / stdDevDenominator,
-          )
+        const minLength = Math.min(stockAPrices.length, stockBPrices.length);
+        const Y_ols = stockAPrices.slice(0, minLength).map(p => p.close);
+        const X_ols_rows = stockBPrices.slice(0, minLength).map(p => [1, p.close]); // [intercept, stockB_price]
+
+        if (X_ols_rows.length === 0) {
+            throw new Error("Insufficient data for OLS regression to calculate spreads.");
         }
-      } else if (modelType === "ols") {
-        for (let i = 0; i < minLength; i++) {
-          const { beta, alpha } = calculateHedgeRatio(pricesA, pricesB, i, olsLookbackWindow)
-          const currentPriceA =
-            typeof pricesA[i].close === "string" ? Number.parseFloat(pricesA[i].close) : pricesA[i].close
-          const currentPriceB =
-            typeof pricesB[i].close === "string" ? Number.parseFloat(pricesB[i].close) : pricesB[i].close
-          const spread = currentPriceA - (alpha + beta * currentPriceB)
-          hedgeRatios.push(beta)
-          alphas.push(alpha)
-          spreads.push(spread)
+
+        // Flatten X_ols_rows for WASM
+        const X_ols_flat = X_ols_rows.flat();
+        const X_ols_num_rows = X_ols_rows.length;
+        const X_ols_num_cols = X_ols_rows[0].length; // Should be 2 ([1, priceB])
+
+        try {
+            // Run the OLS regression using WASM to get alpha and beta
+            const olsRegressionResults = await run_multi_linear_regression_wasm(
+                Y_ols, X_ols_flat, X_ols_num_rows, X_ols_num_cols
+            );
+
+            const alpha = olsRegressionResults.coefficients()[0]; // Intercept
+            const beta = olsRegressionResults.coefficients()[1]; // Coefficient for Stock B
+
+            spreads = stockAPrices.slice(0, minLength).map((priceA, i) => {
+                const priceB = stockBPrices[i].close;
+                return priceA.close - (beta * priceB + alpha);
+            });
+            self.postMessage({ type: "debug", message: `OLS beta: ${beta}, alpha: ${alpha}` });
+        } catch (e) {
+            console.error("Error calculating OLS spread:", e);
+            throw new Error(`Failed to calculate OLS spread using WASM: ${e.message || String(e)}`);
         }
-        zScores = calculateZScore(spreads, zScoreLookback)
-        rollingHalfLifes = calculateRollingHalfLife(spreads, olsLookbackWindow) // Use OLS lookback for rolling half-life
-        // For OLS model, calculate mean/std dev on the warmed-up spread data
-        const warmedUpSpreads = spreads.slice(olsLookbackWindow - 1)
-        if (warmedUpSpreads.length > 0) {
-          meanValue = warmedUpSpreads.reduce((sum, val) => sum + val, 0) / warmedUpSpreads.length
-          const stdDevDenominator = warmedUpSpreads.length > 1 ? warmedUpSpreads.length - 1 : warmedUpSpreads.length
-          stdDevValue = Math.sqrt(
-            warmedUpSpreads.reduce((sum, val) => sum + Math.pow(val - meanValue, 2), 0) / stdDevDenominator,
-          )
-        }
-      } else if (modelType === "kalman") {
-        const kalmanResults = kalmanFilter(
-          pricesA,
-          pricesB,
-          kalmanProcessNoise,
-          kalmanMeasurementNoise,
-          kalmanInitialLookback,
-        )
-        hedgeRatios = kalmanResults.hedgeRatios
-        alphas = kalmanResults.alphas
-        spreads = stockAPrices.map((priceA, i) => priceA - (alphas[i] + hedgeRatios[i] * stockBPrices[i]))
-        zScores = calculateZScore(spreads, zScoreLookback)
-        rollingHalfLifes = calculateRollingHalfLife(spreads, kalmanInitialLookback) // Use Kalman initial lookback for rolling half-life
-        // For Kalman model, calculate mean/std dev on the warmed-up spread data
-        const warmedUpSpreads = spreads.slice(kalmanInitialLookback - 1)
-        if (warmedUpSpreads.length > 0) {
-          meanValue = warmedUpSpreads.reduce((sum, val) => sum + val, 0) / warmedUpSpreads.length
-          const stdDevDenominator = warmedUpSpreads.length > 1 ? warmedUpSpreads.length - 1 : warmedUpSpreads.length
-          stdDevValue = Math.sqrt(
-            warmedUpSpreads.reduce((sum, val) => sum + Math.pow(val - meanValue, 2), 0) / stdDevDenominator,
-          )
-        }
-      } else if (modelType === "euclidean") {
-        const initialPriceA = pricesA[0].close
-        const initialPriceB = pricesB[0].close
-        const normalizedPricesA = stockAPrices.map((p) => p / initialPriceA)
-        const normalizedPricesB = stockBPrices.map((p) => p / initialPriceB)
-        distances = normalizedPricesA.map((normA, i) => Math.abs(normA - normalizedPricesB[i]))
-        zScores = calculateZScore(distances, euclideanLookbackWindow)
-        rollingHalfLifes = calculateRollingHalfLife(distances, euclideanLookbackWindow)
-        // For Euclidean model, calculate mean/std dev on the entire series
-        if (distances.length > 0) {
-          meanValue = distances.reduce((sum, val) => sum + val, 0) / distances.length
-          const stdDevDenominator = distances.length > 1 ? distances.length - 1 : distances.length
-          stdDevValue = Math.sqrt(
-            distances.reduce((sum, val) => sum + Math.pow(val - meanValue, 2), 0) / stdDevDenominator,
-          )
-        }
+      } else {
+         self.postMessage({ type: "debug", message: `Model type ${modelType} requested. Spread calculation for OLS only.` });
+         if (stockAPrices.length === 0 || stockBPrices.length === 0) {
+             throw new Error("No price data for non-OLS calculation.");
+         }
+         const minLength = Math.min(stockAPrices.length, stockBPrices.length);
+         if (modelType === "ratio") {
+             spreads = stockAPrices.slice(0, minLength).map((priceA, i) => {
+                 const priceB = stockBPrices[i].close;
+                 return priceB !== 0 ? priceA.close / priceB : 0;
+             });
+         } else if (modelType === "euclidean") {
+             spreads = stockAPrices.slice(0, minLength).map((priceA, i) => {
+                 const priceB = stockBPrices[i].close;
+                 return Math.sqrt(Math.pow(priceA.close - priceB, 2));
+             });
+         } else if (modelType === "kalman") {
+             throw new Error("Kalman filter spread calculation not implemented in this example.");
+         } else {
+             throw new Error(`Unsupported model type: ${modelType}`);
+         }
       }
 
-      const validZScores = zScores.filter((z) => !isNaN(z))
-      const minZScore = validZScores.length > 0 ? Math.min(...validZScores) : 0
-      const maxZScore = validZScores.length > 0 ? Math.max(...validZScores) : 0
+      const adfTestStatistic = await calculateAdfTestStatistic(spreads, modelType);
+      self.postMessage({ type: "debug", message: `Calculated ADF Test Statistic: ${adfTestStatistic}` });
 
-      const correlation = calculateCorrelation(pricesA.slice(0, minLength), pricesB.slice(0, minLength))
-      // Use WASM for ADF test, passing modelType for conditional lag selection
-      const seriesForADF = modelType === "ratio" ? ratios : modelType === "euclidean" ? distances : spreads
-      const seriesTypeForADF = modelType === "ratio" ? "ratios" : modelType === "euclidean" ? "distances" : "spreads"
-      const adfResults = await adfTestWasm(seriesForADF, seriesTypeForADF, modelType) // Pass modelType here
-      const halfLifeResult = calculateHalfLife(
-        modelType === "ratio" ? ratios : modelType === "euclidean" ? distances : spreads,
-      )
-      const hurstExponent = calculateHurstExponent(
-        modelType === "ratio" ? ratios : modelType === "euclidean" ? distances : spreads,
-      )
-      const practicalTradeHalfLife = calculatePracticalTradeHalfLife(zScores, entryThreshold, exitThreshold)
+      const adfResults = get_adf_p_value_and_stationarity(adfTestStatistic);
+      self.postMessage({ type: "debug", message: `ADF Results: ${JSON.stringify(adfResults)}` });
 
-      const tableData = []
-      for (let i = 0; i < dates.length; i++) {
-        const row = {
-          date: dates[i],
-          priceA: stockAPrices[i],
-          priceB: stockBPrices[i],
-          zScore: zScores[i],
-          halfLife: rollingHalfLifes[i] !== null ? rollingHalfLifes[i].toFixed(2) : "N/A",
-        }
-        if (modelType === "ratio") {
-          row.ratio = ratios[i]
-        } else if (modelType === "ols" || modelType === "kalman") {
-          row.alpha = alphas[i]
-          row.hedgeRatio = hedgeRatios[i]
-          row.spread = spreads[i]
-        } else if (modelType === "euclidean") {
-          row.normalizedA = stockAPrices[i] / pricesA[0].close
-          row.normalizedB = stockBPrices[i] / pricesB[0].close
-          row.distance = distances[i]
-        }
-        tableData.push(row)
-      }
-
-      const rollingMean = []
-      const rollingUpperBand1 = []
-      const rollingLowerBand1 = []
-      const rollingUpperBand2 = []
-      const rollingLowerBand2 = []
-
-      const dataForBands = modelType === "ratio" ? ratios : modelType === "euclidean" ? distances : spreads
-      const rollingStatsWindow =
-        modelType === "ratio"
-          ? ratioLookbackWindow
-          : modelType === "euclidean"
-            ? euclideanLookbackWindow
-            : olsLookbackWindow // Use appropriate lookback
-
-      for (let i = 0; i < dataForBands.length; i++) {
-        const windowStart = Math.max(0, i - rollingStatsWindow + 1)
-        const window = dataForBands.slice(windowStart, i + 1)
-        const mean = window.reduce((sum, val) => sum + val, 0) / window.length
-        const stdDev = Math.sqrt(window.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / window.length)
-
-        rollingMean.push(mean)
-        rollingUpperBand1.push(mean + stdDev)
-        rollingLowerBand1.push(mean - stdDev)
-        rollingUpperBand2.push(mean + 2 * stdDev)
-        rollingLowerBand2.push(mean - 2 * stdDev)
-      }
+      // Calculate other statistics needed for analysisData
+      const { mean, stdDev, zScores } = calculateZScore(spreads);
 
       analysisData = {
-        dates,
-        ratios,
-        spreads,
-        distances,
-        hedgeRatios,
-        alphas,
-        zScores,
-        stockAPrices,
-        stockBPrices,
-        statistics: {
-          correlation,
-          meanRatio: modelType === "ratio" ? meanValue : undefined,
-          stdDevRatio: modelType === "ratio" ? stdDevValue : undefined,
-          meanSpread: modelType === "ols" || modelType === "kalman" ? meanValue : undefined,
-          stdDevSpread: modelType === "ols" || modelType === "kalman" ? stdDevValue : undefined,
-          meanDistance: modelType === "euclidean" ? meanValue : undefined,
-          stdDevDistance: modelType === "euclidean" ? stdDevValue : undefined,
-          minZScore,
-          maxZScore,
-          adfResults,
-          halfLife: halfLifeResult.halfLife,
-          halfLifeValid: halfLifeResult.isValid,
-          hurstExponent,
-          practicalTradeHalfLife,
-          modelType,
+        modelType: modelType,
+        adfResults: {
+          statistic: adfResults.statistic,
+          pValue: adfResults.p_value,
+          criticalValues: adfResults.critical_values,
+          isStationary: adfResults.is_stationary,
         },
-        tableData,
+        correlation: 0, // You would calculate correlation separately if needed
+        meanRatio: modelType === "ratio" ? mean : undefined,
+        stdDevRatio: modelType === "ratio" ? stdDev : undefined,
+        meanSpread: (modelType === "ols" || modelType === "kalman") ? mean : undefined,
+        stdDevSpread: (modelType === "ols" || modelType === "kalman") ? stdDev : undefined,
+        meanDistance: modelType === "euclidean" ? mean : undefined,
+        stdDevDistance: modelType === "euclidean" ? stdDev : undefined,
+        minZScore: zScores.length > 0 ? Math.min(...zScores) : 0,
+        maxZScore: zScores.length > 0 ? Math.max(...zScores) : 0,
+        halfLife: 0,
+        halfLifeValid: false,
+        hurstExponent: 0,
+        practicalTradeHalfLife: 0,
+        tableData: [],
         chartData: {
-          rollingMean,
-          rollingUpperBand1,
-          rollingLowerBand1,
-          rollingUpperBand2,
-          rollingLowerBand2,
+          rollingMean: [],
+          rollingUpperBand1: [],
+          rollingLowerBand1: [],
+          rollingUpperBand2: [],
+          rollingLowerBand2: [],
         },
-      }
+        zScores: zScores,
+      };
+
     } catch (e) {
-      console.error("Error in calculations worker:", e)
-      error = e.message || "An unknown error occurred during analysis."
+      console.error("Error in calculations worker:", e);
+      error = e.message || "An unknown error occurred during analysis.";
     } finally {
-      self.postMessage({ type: "analysisComplete", analysisData, error })
+      self.postMessage({ type: "analysisComplete", analysisData, error });
     }
   }
-}
-
-// Helper for matrix addition (needed by Kalman)
-const matrixAdd2x2 = (A, B) => {
-  return [
-    [A[0][0] + B[0][0], A[0][1] + B[0][1]],
-    [A[1][0] + B[1][0], A[1][1] + B[1][1]],
-  ]
-}
+};
