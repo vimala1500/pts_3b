@@ -116,24 +116,28 @@ const calculateAdfTestStatistic = async (data, modelType) => {
             regressionResults = await run_multi_linear_regression_wasm(Y, X_matrix_flat, num_rows, num_cols);
             self.postMessage({ type: "debug", message: `[ADF] WASM regression completed for lags ${currentLags}.` });
         } catch (e) {
+            console.error(`[ADF] ERROR in WASM regression for lags ${currentLags}:`, e); // More direct error log
             self.postMessage({ type: "error", message: `[ADF] WASM Regression Error for lags ${currentLags}: ${e.message || String(e)}` });
             continue;
         }
 
         // Access results via PROPERTIES as per updated Rust struct and adf_test.js
-        const SSR = regressionResults.ssr; // Changed from .ssr() to .ssr
-        const N_obs = regressionResults.nobs; // Changed from .nobs() to .nobs
-        const K_params = regressionResults.nparams; // Changed from .nparams() to .nparams
-        const coefficients = regressionResults.coefficients; // Changed from .coefficients() to .coefficients
-        const stdErrors = regressionResults.stdErrors;       // Changed from .stdErrors() to .stdErrors
+        const SSR = regressionResults.ssr;
+        const N_obs = regressionResults.nobs;
+        const K_params = regressionResults.nparams;
+        const coefficients = regressionResults.coefficients;
+        const stdErrors = regressionResults.stdErrors;
 
-        self.postMessage({ type: "debug", message: `[ADF] Results for lags ${currentLags}: SSR=${SSR}, N_obs=${N_obs}, K_params=${K_params}, Coeffs=${JSON.stringify(Array.from(coefficients))}, StdErrors=${JSON.stringify(Array.from(stdErrors))}` });
+        // FIX: Simplify logging of coefficients and stdErrors to avoid potential console buffer issues
+        self.postMessage({ type: "debug", message: `[ADF] Results for lags ${currentLags}: SSR=${SSR}, N_obs=${N_obs}, K_params=${K_params}, Coeffs length=${coefficients.length}, StdErrors length=${stdErrors.length}` });
 
 
         let currentAIC;
-        if (N_obs > 0 && SSR >= 0) {
+        // Check for invalid values before Math.log
+        if (N_obs > 0 && SSR > 0 && isFinite(SSR)) { // Ensure SSR is positive for log and finite
             currentAIC = N_obs * Math.log(SSR / N_obs) + 2 * K_params;
         } else {
+            self.postMessage({ type: "warn", message: `[ADF] Invalid SSR or N_obs for AIC calculation at lags ${currentLags}. SSR: ${SSR}, N_obs: ${N_obs}. Setting AIC to Infinity.` });
             currentAIC = Number.POSITIVE_INFINITY;
         }
         self.postMessage({ type: "debug", message: `[ADF] AIC for lags ${currentLags}: ${currentAIC}` });
@@ -141,15 +145,21 @@ const calculateAdfTestStatistic = async (data, modelType) => {
 
         if (currentAIC < minCriterionValue) {
             minCriterionValue = currentAIC;
-            const beta_coefficient = coefficients[1];
-            const beta_std_error = stdErrors[1];
+            // Ensure coefficients and stdErrors arrays have at least 2 elements for index 1
+            if (coefficients.length > 1 && stdErrors.length > 1) {
+                const beta_coefficient = coefficients[1];
+                const beta_std_error = stdErrors[1];
 
-            if (beta_std_error !== 0 && isFinite(beta_std_error)) {
-                optimalTestStatistic = beta_coefficient / beta_std_error;
-                self.postMessage({ type: "debug", message: `[ADF] New optimal test statistic found for lags ${currentLags}: ${optimalTestStatistic}` });
+                if (beta_std_error !== 0 && isFinite(beta_std_error)) {
+                    optimalTestStatistic = beta_coefficient / beta_std_error;
+                    self.postMessage({ type: "debug", message: `[ADF] New optimal test statistic found for lags ${currentLags}: ${optimalTestStatistic}` });
+                } else {
+                    optimalTestStatistic = 0;
+                    self.postMessage({ type: "warn", message: `[ADF] Standard error for beta coefficient (index 1) is zero or infinite for lags ${currentLags}. Test statistic set to 0.` });
+                }
             } else {
+                self.postMessage({ type: "warn", message: `[ADF] Coefficients or StdErrors array too short for beta at lags ${currentLags}. Lengths: Coeffs=${coefficients.length}, StdErrors=${stdErrors.length}. Test statistic set to 0.` });
                 optimalTestStatistic = 0;
-                self.postMessage({ type: "warn", message: `[ADF] Standard error for beta coefficient is zero or infinite for lags ${currentLags}. Test statistic set to 0.` });
             }
         }
     }
@@ -201,8 +211,8 @@ self.onmessage = async (event) => {
                 Y_ols, X_ols_flat, X_ols_num_rows, X_ols_num_cols
             );
 
-            const alpha = olsRegressionResults.coefficients[0]; // Access as a PROPERTY
-            const beta = olsRegressionResults.coefficients[1];   // Access as a PROPERTY
+            const alpha = olsRegressionResults.coefficients[0];
+            const beta = olsRegressionResults.coefficients[1];
 
             spreads = stockAPrices.slice(0, minLength).map((priceA, i) => {
                 const priceB = stockBPrices[i].close;
@@ -210,7 +220,7 @@ self.onmessage = async (event) => {
             });
             self.postMessage({ type: "debug", message: `[Worker] OLS spread calculated. Beta: ${beta}, Alpha: ${alpha}, Spreads length: ${spreads.length}` });
         } catch (e) {
-            console.error("[Worker] Error during OLS regression WASM call:", e);
+            console.error("[Worker] Error during OLS regression WASM call:", e); // Direct error log
             throw new Error(`Failed to calculate OLS spread using WASM: ${e.message || String(e)}`);
         }
       } else {
@@ -255,8 +265,8 @@ self.onmessage = async (event) => {
         adfResults: {
           statistic: adfResults.statistic,
           pValue: adfResults.p_value,
-          criticalValues: adfResults.criticalValues, // Access via PROPERTY
-          isStationary: adfResults.isStationary, // Access via PROPERTY
+          criticalValues: adfResults.criticalValues,
+          isStationary: adfResults.isStationary,
         },
         correlation: 0,
         meanRatio: modelType === "ratio" ? mean : undefined,
