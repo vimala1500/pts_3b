@@ -165,8 +165,9 @@ self.onmessage = async (event) => {
 
   const { type, payload } = event.data;
 
-  if (type === "startAnalysis") {
-    self.postMessage({ type: "debug", message: "[Worker] Received startAnalysis message." });
+  // FIX: Change 'startAnalysis' to 'runAnalysis' to match the message type being sent
+  if (type === "runAnalysis") {
+    self.postMessage({ type: "debug", message: "[Worker] Received runAnalysis message. Starting analysis..." });
     const { stockAPrices, stockBPrices, modelType, windowSize } = payload;
 
     let analysisData = null;
@@ -217,7 +218,7 @@ self.onmessage = async (event) => {
         }
       } else {
          self.postMessage({ type: "debug", message: `[Worker] Starting non-OLS spread calculation for model: ${modelType}` });
-         if (!stockAPrices || stockAPrices.length === 0 || !stockBPrices || stockBPrices.length === 0) { // Fix: Changed stockBPPrices to stockBPrices
+         if (!stockAPrices || stockAPrices.length === 0 || !stockBPrices || stockBPrices.length === 0) {
              throw new Error("No price data for non-OLS calculation.");
          }
          const minLength = Math.min(stockAPrices.length, stockBPrices.length);
