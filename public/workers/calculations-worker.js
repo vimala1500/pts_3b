@@ -124,8 +124,8 @@ const calculateAdfTestStatistic = async (data, modelType) => {
         const SSR = regressionResults.ssr();
         const N_obs = regressionResults.nobs();
         const K_params = regressionResults.nparams();
-        const coefficients = regressionResults.coefficients();
-        const stdErrors = regressionResults.stdErrors();
+        const coefficients = regressionResults.coefficients(); // Access as a method
+        const stdErrors = regressionResults.stdErrors();       // Access as a method
 
         self.postMessage({ type: "debug", message: `[ADF] Results for lags ${currentLags}: SSR=${SSR}, N_obs=${N_obs}, K_params=${K_params}, Coeffs=${JSON.stringify(Array.from(coefficients))}, StdErrors=${JSON.stringify(Array.from(stdErrors))}` });
 
@@ -159,13 +159,10 @@ const calculateAdfTestStatistic = async (data, modelType) => {
 
 // Main message handler for the worker
 self.onmessage = async (event) => {
-  // --- ADDED THIS LINE FOR INITIAL DEBUGGING ---
   self.postMessage({ type: "debug", message: `[Worker Main] Message received, type: ${event.data.type}` });
-  // --- END ADDED LINE ---
 
   const { type, payload } = event.data;
 
-  // FIX: Change 'startAnalysis' to 'runAnalysis' to match the message type being sent
   if (type === "runAnalysis") {
     self.postMessage({ type: "debug", message: "[Worker] Received runAnalysis message. Starting analysis..." });
     const { stockAPrices, stockBPrices, modelType, windowSize } = payload;
@@ -204,8 +201,8 @@ self.onmessage = async (event) => {
                 Y_ols, X_ols_flat, X_ols_num_rows, X_ols_num_cols
             );
 
-            const alpha = olsRegressionResults.coefficients()[0];
-            const beta = olsRegressionResults.coefficients()[1];
+            const alpha = olsRegressionResults.coefficients()[0]; // Access as a method
+            const beta = olsRegressionResults.coefficients()[1];   // Access as a method
 
             spreads = stockAPrices.slice(0, minLength).map((priceA, i) => {
                 const priceB = stockBPrices[i].close;
