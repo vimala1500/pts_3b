@@ -223,35 +223,24 @@ export default function PairAnalyzer() {
         worker.addEventListener("message", messageHandler)
         worker.addEventListener("error", errorHandler)
 
-        // --- FIX STARTS HERE ---
-        // Restructure the message to match the worker's expected 'payload' format
+        // Send data and parameters to the worker
         worker.postMessage({
           type: "runAnalysis",
-          payload: { // <-- New 'payload' object
-            stockAPrices: pricesA, // Renamed from 'data.pricesA' to match worker
-            stockBPrices: pricesB, // Renamed from 'data.pricesB' to match worker
-            modelType: activeTab, // Moved from 'params.modelType' to top-level payload param
-            windowSize: zScoreLookback, // Using zScoreLookback as the generic windowSize expected by worker
-            // Pass other model-specific parameters if needed by worker directly,
-            // or let the worker derive them from modelType and its internal logic
-            // For now, these specific lookback windows are not directly used in the worker's payload destructuring
-            // but might be used if the worker's logic expands beyond just stockAPrices, stockBPrices, modelType, windowSize
+          data: { pricesA, pricesB },
+          params: {
+            modelType: activeTab,
             ratioLookbackWindow,
             olsLookbackWindow,
             kalmanProcessNoise,
             kalmanMeasurementNoise,
             kalmanInitialLookback,
             euclideanLookbackWindow,
-            zScoreLookback, // Duplicated but harmless, ensuring it's available if needed directly
+            zScoreLookback,
             entryThreshold,
             exitThreshold,
           },
-          // selectedPair is also not directly destructured in worker's payload currently,
-          // but if worker needs it, it should be nested under payload
-          // For now, removing it from top-level to simplify payload structure.
-          // If worker needs selectedPair, add it to payload: selectedPair: selectedPair,
+          selectedPair: selectedPair,
         })
-        // --- FIX ENDS HERE ---
       })
 
       const result = await analysisPromise
@@ -1524,7 +1513,7 @@ export default function PairAnalyzer() {
                         </td>
                         <td className="table-cell">{row.halfLife || "N/A"}</td>
                       </tr>
-                    ))}\
+                    ))}
                   </tbody>
                 </table>
               </div>
@@ -1535,4 +1524,3 @@ export default function PairAnalyzer() {
     </div>
   )
 }
-
