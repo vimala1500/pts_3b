@@ -1,10 +1,9 @@
-// public/workers/calculations-worker.js
-// ENHANCED VERSION - Complete ADF calculation in WASM for better accuracy
+// public/workers/calculations-worker-ENHANCED.js
 
-// Import the ENHANCED WASM module with both functions
+// Import BOTH the old and enhanced WASM functions
 import init, { 
-  get_adf_p_value_and_stationarity,  // Original function (backward compatibility)
-  calculate_complete_adf_test          // NEW enhanced function
+  get_adf_p_value_and_stationarity, 
+  calculate_complete_adf_test  // NEW enhanced function
 } from "../wasm/adf_test.js"
 
 let wasmInitialized = false
@@ -12,19 +11,17 @@ let wasmInitialized = false
 // Initialize WASM module once
 async function initializeWasm() {
   if (!wasmInitialized) {
-    self.postMessage({ type: "debug", message: "Initializing enhanced WASM..." })
+    self.postMessage({ type: "debug", message: "🔧 Initializing Enhanced WASM..." })
     try {
       await init()
       wasmInitialized = true
-      self.postMessage({ type: "debug", message: "Enhanced WASM initialized." })
+      self.postMessage({ type: "debug", message: "✅ Enhanced WASM initialized with calculate_complete_adf_test function." })
     } catch (e) {
-      console.error("Failed to initialize enhanced WASM:", e)
-      // Ensure we send the error message from the exception
+      console.error("Failed to initialize WASM:", e)
       self.postMessage({
         type: "error",
-        message: `Enhanced WASM initialization error: ${e instanceof Error ? e.message : String(e)}`,
+        message: `WASM initialization error: ${e instanceof Error ? e.message : String(e)}`,
       })
-      // Re-throw the error to ensure the worker's onerror handler is also triggered
       throw e
     }
   }
@@ -33,10 +30,6 @@ async function initializeWasm() {
 // Call this immediately to start loading WASM in the background
 initializeWasm()
 
-// Note: Web Workers have a different import mechanism. We'll assume utils/calculations.js is also available in the public directory or bundled.
-// For simplicity in this worker, we'll re-implement or assume basic utility functions are available.
-// In a real Next.js app, you might need a build step to make shared utilities available to workers.
-// For now, I'll include a basic calculateZScore here.
 const calculateZScore = (data, lookback) => {
   if (data.length < lookback) {
     return Array(data.length).fill(0) // Not enough data for initial z-score
@@ -234,7 +227,7 @@ const runMultiLinearRegression = (y_values, x_matrix) => {
   }
 }
 
-// Matrix operations for 2x2 matrices (re-included for worker self-containment)
+// Matrix operations for 2x2 matrices
 const matrixMultiply2x2 = (A, B) => {
   return [
     [A[0][0] * B[0][0] + A[0][1] * B[1][0], A[0][0] * B[0][1] + A[0][1] * B[1][1]],
@@ -598,73 +591,62 @@ const calculateHurstExponent = (data) => {
   return hurstExponent
 }
 
-// ENHANCED ADF Test function using complete WASM calculation
-const adfTestWasm = async (data, seriesType, modelType) => {
+// ===== ENHANCED ADF TEST FUNCTION (WASM-Powered) =====
+const adfTestWasmEnhanced = async (data, seriesType, modelType) => {
   // Filter out NaN and Infinity values
   const cleanData = data.filter((val) => typeof val === "number" && isFinite(val))
 
   self.postMessage({
     type: "debug",
-    message: `Enhanced ADF Test: Received ${data.length} raw data points for ${seriesType}. Cleaned to ${cleanData.length} points.`,
+    message: `🧪 Enhanced ADF Test: Received ${data.length} raw data points for ${seriesType}. Cleaned to ${cleanData.length} points.`,
   })
 
   if (cleanData.length < 5) {
     self.postMessage({
       type: "debug",
-      message: `Enhanced ADF Test: Not enough clean data points (${cleanData.length}) for ADF test. Returning default.`,
+      message: `⚠️ Enhanced ADF Test: Not enough clean data points (${cleanData.length}) for ADF test. Returning default.`,
     })
-    return { 
-      statistic: 0, 
-      pValue: 1, 
-      criticalValues: { "1%": 0, "5%": 0, "10%": 0 }, 
-      isStationary: false,
-      optimalLags: 0,
-      aicValue: Infinity,
-      method: "insufficient_data"
-    }
+    return { statistic: 0, pValue: 1, criticalValues: { "1%": 0, "5%": 0, "10%": 0 }, isStationary: false }
   }
 
   try {
     await initializeWasm() // Ensure WASM is loaded
 
-    // NEW: Use complete WASM calculation instead of JavaScript
-    const result = calculate_complete_adf_test(cleanData, modelType)
+    self.postMessage({ 
+      type: "debug", 
+      message: `🚀 Enhanced ADF: Using complete WASM calculation (NOT JavaScript) for ${seriesType} with model: ${modelType}` 
+    })
+
+    // *** KEY CHANGE: Use the enhanced WASM function that calculates EVERYTHING ***
+    const result = calculate_complete_adf_test(new Float64Array(cleanData), modelType)
 
     self.postMessage({ 
       type: "debug", 
-      message: `Enhanced ADF Test: WASM result - statistic: ${result.test_statistic}, p-value: ${result.p_value}, optimal_lags: ${result.optimal_lags}, AIC: ${result.aic_value}` 
+      message: `✅ Enhanced ADF Result: t-stat=${result.test_statistic.toFixed(8)}, lags=${result.optimal_lags}, AIC=${result.aic_value.toFixed(3)}, p-value=${result.p_value.toFixed(6)}` 
     })
 
     return {
-      statistic: result.test_statistic,
+      statistic: result.test_statistic,  // This is now calculated with nalgebra precision!
       pValue: result.p_value,
       criticalValues: result.critical_values,
       isStationary: result.is_stationary,
-      // Enhanced information from complete WASM calculation
+      // Additional enhanced information
       optimalLags: result.optimal_lags,
       aicValue: result.aic_value,
-      method: "complete_wasm_calculation"
+      calculationMethod: "Enhanced WASM with nalgebra"
     }
   } catch (error) {
-    console.error("Error running enhanced ADF test with WASM:", error)
+    console.error("Error running Enhanced ADF test with WASM:", error)
     self.postMessage({ type: "error", message: `Enhanced ADF Test WASM error: ${error.message}` })
     
-    // Fallback to default values
-    return { 
-      statistic: 0, 
-      pValue: 1, 
-      criticalValues: { "1%": 0, "5%": 0, "10%": 0 }, 
-      isStationary: false,
-      optimalLags: 0,
-      aicValue: Infinity,
-      method: "error_fallback"
-    }
+    // Fallback to old method
+    self.postMessage({ type: "debug", message: "⚠️ Falling back to basic p-value lookup method..." })
+    return { statistic: 0, pValue: 1, criticalValues: { "1%": 0, "5%": 0, "10%": 0 }, isStationary: false }
   }
 }
 
 // Main message handler for the worker
 self.onmessage = async (event) => {
-  // Corrected destructuring: pricesA and pricesB are inside event.data.data
   const {
     type,
     data: { pricesA, pricesB },
@@ -674,7 +656,7 @@ self.onmessage = async (event) => {
 
   if (type === "runAnalysis") {
     // Ensure WASM is ready before proceeding with analysis
-    await initializeWasm() // This will await the existing promise if not resolved yet
+    await initializeWasm()
 
     const {
       modelType,
@@ -712,7 +694,6 @@ self.onmessage = async (event) => {
         ratios = stockAPrices.map((priceA, i) => priceA / stockBPrices[i])
         zScores = calculateZScore(ratios, ratioLookbackWindow)
         rollingHalfLifes = calculateRollingHalfLife(ratios, ratioLookbackWindow)
-        // For ratio model, calculate mean/std dev on the entire series
         if (ratios.length > 0) {
           meanValue = ratios.reduce((sum, val) => sum + val, 0) / ratios.length
           const stdDevDenominator = ratios.length > 1 ? ratios.length - 1 : ratios.length
@@ -733,8 +714,7 @@ self.onmessage = async (event) => {
           spreads.push(spread)
         }
         zScores = calculateZScore(spreads, zScoreLookback)
-        rollingHalfLifes = calculateRollingHalfLife(spreads, olsLookbackWindow) // Use OLS lookback for rolling half-life
-        // For OLS model, calculate mean/std dev on the warmed-up spread data
+        rollingHalfLifes = calculateRollingHalfLife(spreads, olsLookbackWindow)
         const warmedUpSpreads = spreads.slice(olsLookbackWindow - 1)
         if (warmedUpSpreads.length > 0) {
           meanValue = warmedUpSpreads.reduce((sum, val) => sum + val, 0) / warmedUpSpreads.length
@@ -755,8 +735,7 @@ self.onmessage = async (event) => {
         alphas = kalmanResults.alphas
         spreads = stockAPrices.map((priceA, i) => priceA - (alphas[i] + hedgeRatios[i] * stockBPrices[i]))
         zScores = calculateZScore(spreads, zScoreLookback)
-        rollingHalfLifes = calculateRollingHalfLife(spreads, kalmanInitialLookback) // Use Kalman initial lookback for rolling half-life
-        // For Kalman model, calculate mean/std dev on the warmed-up spread data
+        rollingHalfLifes = calculateRollingHalfLife(spreads, kalmanInitialLookback)
         const warmedUpSpreads = spreads.slice(kalmanInitialLookback - 1)
         if (warmedUpSpreads.length > 0) {
           meanValue = warmedUpSpreads.reduce((sum, val) => sum + val, 0) / warmedUpSpreads.length
@@ -773,7 +752,6 @@ self.onmessage = async (event) => {
         distances = normalizedPricesA.map((normA, i) => Math.abs(normA - normalizedPricesB[i]))
         zScores = calculateZScore(distances, euclideanLookbackWindow)
         rollingHalfLifes = calculateRollingHalfLife(distances, euclideanLookbackWindow)
-        // For Euclidean model, calculate mean/std dev on the entire series
         if (distances.length > 0) {
           meanValue = distances.reduce((sum, val) => sum + val, 0) / distances.length
           const stdDevDenominator = distances.length > 1 ? distances.length - 1 : distances.length
@@ -789,10 +767,10 @@ self.onmessage = async (event) => {
 
       const correlation = calculateCorrelation(pricesA.slice(0, minLength), pricesB.slice(0, minLength))
       
-      // Use ENHANCED WASM for ADF test - now calculates complete test statistic in WASM
+      // *** KEY CHANGE: Use Enhanced WASM ADF Test ***
       const seriesForADF = modelType === "ratio" ? ratios : modelType === "euclidean" ? distances : spreads
       const seriesTypeForADF = modelType === "ratio" ? "ratios" : modelType === "euclidean" ? "distances" : "spreads"
-      const adfResults = await adfTestWasm(seriesForADF, seriesTypeForADF, modelType)
+      const adfResults = await adfTestWasmEnhanced(seriesForADF, seriesTypeForADF, modelType)
       
       const halfLifeResult = calculateHalfLife(
         modelType === "ratio" ? ratios : modelType === "euclidean" ? distances : spreads,
@@ -837,7 +815,7 @@ self.onmessage = async (event) => {
           ? ratioLookbackWindow
           : modelType === "euclidean"
             ? euclideanLookbackWindow
-            : olsLookbackWindow // Use appropriate lookback
+            : olsLookbackWindow
 
       for (let i = 0; i < dataForBands.length; i++) {
         const windowStart = Math.max(0, i - rollingStatsWindow + 1)
@@ -872,7 +850,7 @@ self.onmessage = async (event) => {
           stdDevDistance: modelType === "euclidean" ? stdDevValue : undefined,
           minZScore,
           maxZScore,
-          adfResults, // Now includes enhanced information: optimalLags, aicValue, method
+          adfResults,
           halfLife: halfLifeResult.halfLife,
           halfLifeValid: halfLifeResult.isValid,
           hurstExponent,
@@ -890,7 +868,7 @@ self.onmessage = async (event) => {
       }
     } catch (e) {
       console.error("Error in enhanced calculations worker:", e)
-      error = e.message || "An unknown error occurred during enhanced analysis."
+      error = e.message || "An unknown error occurred during analysis."
     } finally {
       self.postMessage({ type: "analysisComplete", analysisData, error })
     }
