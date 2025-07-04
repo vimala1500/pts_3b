@@ -1,25 +1,28 @@
 // public/workers/calculations-worker.js
+// ENHANCED VERSION - Complete ADF calculation in WASM for better accuracy
 
-// Import the WASM module and its initialization function
-// Adjust the path based on where you placed your 'pkg' folder in the public directory
-import init, { get_adf_p_value_and_stationarity } from "../wasm/adf_test.js"
+// Import the ENHANCED WASM module with both functions
+import init, { 
+  get_adf_p_value_and_stationarity,  // Original function (backward compatibility)
+  calculate_complete_adf_test          // NEW enhanced function
+} from "../wasm/adf_test.js"
 
 let wasmInitialized = false
 
 // Initialize WASM module once
 async function initializeWasm() {
   if (!wasmInitialized) {
-    self.postMessage({ type: "debug", message: "Initializing WASM..." })
+    self.postMessage({ type: "debug", message: "Initializing enhanced WASM..." })
     try {
       await init()
       wasmInitialized = true
-      self.postMessage({ type: "debug", message: "WASM initialized." })
+      self.postMessage({ type: "debug", message: "Enhanced WASM initialized." })
     } catch (e) {
-      console.error("Failed to initialize WASM:", e)
+      console.error("Failed to initialize enhanced WASM:", e)
       // Ensure we send the error message from the exception
       self.postMessage({
         type: "error",
-        message: `WASM initialization error: ${e instanceof Error ? e.message : String(e)}`,
+        message: `Enhanced WASM initialization error: ${e instanceof Error ? e.message : String(e)}`,
       })
       // Re-throw the error to ensure the worker's onerror handler is also triggered
       throw e
@@ -595,147 +598,67 @@ const calculateHurstExponent = (data) => {
   return hurstExponent
 }
 
-// ADF Test Statistic Calculation with Optimal Lag Selection
-const calculateAdfTestStatistic = (data, modelType) => {
-  const n = data.length
-  if (n < 5) return 0 // ADF requires at least 5 observations
-
-  let minLagsToTest = 0
-  let maxLagsToTest = 0
-
-  if (modelType === "ols") {
-    minLagsToTest = 0
-    // A common heuristic, ensuring enough data for regression:
-    // (data.length - 1) is diffData.length.
-    // We need at least k_params observations for regression.
-    // k_params = 1 (constant) + 1 (y_t-1) + currentLags.
-    // So, diffData.length - effectiveStartIndex (currentLags) >= k_params
-    // (data.length - 1) - currentLags >= 2 + currentLags
-    // data.length - 3 >= 2 * currentLags
-    // (data.length - 3) / 2 >= currentLags
-    maxLagsToTest = Math.min(12, Math.floor((n - 3) / 2))
-    if (maxLagsToTest < minLagsToTest) maxLagsToTest = minLagsToTest // Ensure max is not less than min
-  } else {
-    // For other models, use a fixed, minimal lag selection
-    minLagsToTest = 0
-    maxLagsToTest = 1 // Test 0 or 1 lag
-  }
-
-  let minCriterionValue = Number.POSITIVE_INFINITY
-  let optimalTestStatistic = 0 // Default to 0 if no valid regression found
-
-  for (let currentLags = minLagsToTest; currentLags <= maxLagsToTest; currentLags++) {
-    const diffData = data.slice(1).map((val, i) => val - data[i])
-
-    // The regression starts from the point where all lagged terms are available.
-    // If currentLags = 0, you only need y_{t-1} (so data[1] and diffData[0]).
-    // If currentLags = 1, you need y_{t-2} and \Delta y_{t-2} etc.
-    // The effective start index for Y and X_matrix will be currentLags.
-    const effectiveStartIndex = currentLags
-    if (diffData.length <= effectiveStartIndex) {
-      continue // Not enough data for this many lags, skip this iteration
-    }
-
-    const Y = [] // Dependent variable: delta_y
-    for (let i = effectiveStartIndex; i < diffData.length; i++) {
-      Y.push(diffData[i])
-    }
-
-    const X_matrix = [] // Independent variables: [constant, y_t-1, delta_y_t-1, ..., delta_y_t-currentLags]
-    for (let i = effectiveStartIndex; i < diffData.length; i++) {
-      const row = [1, data[i]] // Constant (for alpha) and y_t-1 (for beta)
-      for (let j = 1; j <= currentLags; j++) {
-        row.push(diffData[i - j]) // Add delta_y_t-j
-      }
-      X_matrix.push(row)
-    }
-
-    const k_params = 1 + 1 + currentLags // Number of parameters in this model: constant + y_t-1 + currentLags
-    if (Y.length < k_params) {
-      continue // Not enough observations for this model complexity
-    }
-
-    const regressionResults = runMultiLinearRegression(Y, X_matrix)
-
-    if (
-      !regressionResults ||
-      typeof regressionResults.SSR === "undefined" ||
-      !regressionResults.coefficients ||
-      !regressionResults.stdErrors ||
-      regressionResults.nobs < k_params
-    ) {
-      continue // Handle cases where regression might fail or return incomplete results
-    }
-
-    const SSR = regressionResults.SSR
-    const N = regressionResults.nobs // Number of observations used in this specific regression
-    const k = regressionResults.nparams // Number of parameters in this specific regression model
-
-    // Using the common OLS-based approximation for AIC:
-    const currentAIC = N * Math.log(SSR / N) + 2 * k
-
-    if (currentAIC < minCriterionValue) {
-      minCriterionValue = currentAIC
-      // The t-statistic for beta (coefficient of y_t-1) is coefficients[1] / stdErrors[1]
-      if (regressionResults.stdErrors[1] !== 0 && isFinite(regressionResults.stdErrors[1])) {
-        optimalTestStatistic = regressionResults.coefficients[1] / regressionResults.stdErrors[1]
-      } else {
-        optimalTestStatistic = 0 // Handle division by zero or invalid std error
-      }
-    }
-  }
-  return optimalTestStatistic
-}
-
-// ADF Test function (now using WASM)
+// ENHANCED ADF Test function using complete WASM calculation
 const adfTestWasm = async (data, seriesType, modelType) => {
   // Filter out NaN and Infinity values
   const cleanData = data.filter((val) => typeof val === "number" && isFinite(val))
 
   self.postMessage({
     type: "debug",
-    message: `ADF Test: Received ${data.length} raw data points for ${seriesType}. Cleaned to ${cleanData.length} points.`,
+    message: `Enhanced ADF Test: Received ${data.length} raw data points for ${seriesType}. Cleaned to ${cleanData.length} points.`,
   })
-  if (cleanData.length > 0) {
-    self.postMessage({
-      type: "debug",
-      message: `ADF Test: Sample of clean data (first 5): ${cleanData.slice(0, 5).join(", ")}`,
-    })
-    self.postMessage({
-      type: "debug",
-      message: `ADF Test: Sample of clean data (last 5): ${cleanData.slice(-5).join(", ")}`,
-    })
-  }
 
   if (cleanData.length < 5) {
     self.postMessage({
       type: "debug",
-      message: `ADF Test: Not enough clean data points (${cleanData.length}) for ADF test. Returning default.`,
+      message: `Enhanced ADF Test: Not enough clean data points (${cleanData.length}) for ADF test. Returning default.`,
     })
-    return { statistic: 0, pValue: 1, criticalValues: { "1%": 0, "5%": 0, "10%": 0 }, isStationary: false }
+    return { 
+      statistic: 0, 
+      pValue: 1, 
+      criticalValues: { "1%": 0, "5%": 0, "10%": 0 }, 
+      isStationary: false,
+      optimalLags: 0,
+      aicValue: Infinity,
+      method: "insufficient_data"
+    }
   }
 
   try {
     await initializeWasm() // Ensure WASM is loaded
 
-    // Calculate the test statistic in JavaScript using optimal lag selection
-    const testStatistic = calculateAdfTestStatistic(cleanData, modelType) // Pass modelType here
+    // NEW: Use complete WASM calculation instead of JavaScript
+    const result = calculate_complete_adf_test(cleanData, modelType)
 
-    // Call the WASM function
-    const result = get_adf_p_value_and_stationarity(testStatistic)
-
-    self.postMessage({ type: "debug", message: `ADF Test: WASM result: ${JSON.stringify(result)}` })
+    self.postMessage({ 
+      type: "debug", 
+      message: `Enhanced ADF Test: WASM result - statistic: ${result.test_statistic}, p-value: ${result.p_value}, optimal_lags: ${result.optimal_lags}, AIC: ${result.aic_value}` 
+    })
 
     return {
-      statistic: result.statistic,
+      statistic: result.test_statistic,
       pValue: result.p_value,
       criticalValues: result.critical_values,
       isStationary: result.is_stationary,
+      // Enhanced information from complete WASM calculation
+      optimalLags: result.optimal_lags,
+      aicValue: result.aic_value,
+      method: "complete_wasm_calculation"
     }
   } catch (error) {
-    console.error("Error running ADF test with WASM:", error)
-    self.postMessage({ type: "error", message: `ADF Test WASM error: ${error.message}` })
-    return { statistic: 0, pValue: 1, criticalValues: { "1%": 0, "5%": 0, "10%": 0 }, isStationary: false }
+    console.error("Error running enhanced ADF test with WASM:", error)
+    self.postMessage({ type: "error", message: `Enhanced ADF Test WASM error: ${error.message}` })
+    
+    // Fallback to default values
+    return { 
+      statistic: 0, 
+      pValue: 1, 
+      criticalValues: { "1%": 0, "5%": 0, "10%": 0 }, 
+      isStationary: false,
+      optimalLags: 0,
+      aicValue: Infinity,
+      method: "error_fallback"
+    }
   }
 }
 
@@ -865,10 +788,12 @@ self.onmessage = async (event) => {
       const maxZScore = validZScores.length > 0 ? Math.max(...validZScores) : 0
 
       const correlation = calculateCorrelation(pricesA.slice(0, minLength), pricesB.slice(0, minLength))
-      // Use WASM for ADF test, passing modelType for conditional lag selection
+      
+      // Use ENHANCED WASM for ADF test - now calculates complete test statistic in WASM
       const seriesForADF = modelType === "ratio" ? ratios : modelType === "euclidean" ? distances : spreads
       const seriesTypeForADF = modelType === "ratio" ? "ratios" : modelType === "euclidean" ? "distances" : "spreads"
-      const adfResults = await adfTestWasm(seriesForADF, seriesTypeForADF, modelType) // Pass modelType here
+      const adfResults = await adfTestWasm(seriesForADF, seriesTypeForADF, modelType)
+      
       const halfLifeResult = calculateHalfLife(
         modelType === "ratio" ? ratios : modelType === "euclidean" ? distances : spreads,
       )
@@ -947,7 +872,7 @@ self.onmessage = async (event) => {
           stdDevDistance: modelType === "euclidean" ? stdDevValue : undefined,
           minZScore,
           maxZScore,
-          adfResults,
+          adfResults, // Now includes enhanced information: optimalLags, aicValue, method
           halfLife: halfLifeResult.halfLife,
           halfLifeValid: halfLifeResult.isValid,
           hurstExponent,
@@ -964,8 +889,8 @@ self.onmessage = async (event) => {
         },
       }
     } catch (e) {
-      console.error("Error in calculations worker:", e)
-      error = e.message || "An unknown error occurred during analysis."
+      console.error("Error in enhanced calculations worker:", e)
+      error = e.message || "An unknown error occurred during enhanced analysis."
     } finally {
       self.postMessage({ type: "analysisComplete", analysisData, error })
     }
