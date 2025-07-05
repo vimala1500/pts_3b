@@ -284,7 +284,7 @@ const calculateHedgeRatio = (pricesA, pricesB, currentIndex, windowSize) => {
   return { beta, alpha }
 }
 
-// Kalman filter implementation
+// Corrected Kalman filter implementation
 const kalmanFilter = (pricesA, pricesB, processNoise, measurementNoise, initialLookback) => {
   const n = pricesA.length
 
@@ -292,10 +292,8 @@ const kalmanFilter = (pricesA, pricesB, processNoise, measurementNoise, initialL
     return { hedgeRatios: Array(n).fill(1), alphas: Array(n).fill(0) }
   }
 
-  let sumA = 0,
-    sumB = 0,
-    sumAB = 0,
-    sumB2 = 0
+  // Initialize with OLS regression on first initialLookback days
+  let sumA = 0, sumB = 0, sumAB = 0, sumB2 = 0
   for (let i = 0; i < initialLookback; i++) {
     const priceA = typeof pricesA[i].close === "string" ? Number.parseFloat(pricesA[i].close) : pricesA[i].close
     const priceB = typeof pricesB[i].close === "string" ? Number.parseFloat(pricesB[i].close) : pricesB[i].close
@@ -312,69 +310,101 @@ const kalmanFilter = (pricesA, pricesB, processNoise, measurementNoise, initialL
   const initialBeta = Math.abs(denominator) > 1e-10 ? numerator / denominator : 1.0
   const initialAlpha = meanA - initialBeta * meanB
 
-  let residualSumSquares = 0
-  for (let i = 0; i < initialLookback; i++) {
-    const priceA = typeof pricesA[i].close === "string" ? Number.parseFloat(pricesA[i].close) : pricesA[i].close
-    const priceB = typeof pricesB[i].close === "string" ? Number.parseFloat(pricesB[i].close) : pricesB[i].close
-    const predicted = initialAlpha + initialBeta * priceB
-    const residual = priceA - predicted
-    residualSumSquares += residual * residual
+  // Calculate measurement noise R - use provided value or estimate from OLS residuals
+  let R = measurementNoise
+  if (!R || R <= 0) {
+    let residualSumSquares = 0
+    for (let i = 0; i < initialLookback; i++) {
+      const priceA = typeof pricesA[i].close === "string" ? Number.parseFloat(pricesA[i].close) : pricesA[i].close
+      const priceB = typeof pricesB[i].close === "string" ? Number.parseFloat(pricesB[i].close) : pricesB[i].close
+      const predicted = initialAlpha + initialBeta * priceB
+      const residual = priceA - predicted
+      residualSumSquares += residual * residual
+    }
+    // Use sample variance with correct degrees of freedom
+    R = residualSumSquares / Math.max(1, initialLookback - 2)
   }
-  const adaptiveR = residualSumSquares / (initialLookback - 2)
+  
+  // Ensure R is positive and reasonable
+  R = Math.max(R, 1e-6)
 
+  // Initialize state vector [alpha, beta]
   let x = [initialAlpha, initialBeta]
+  
+  // Initialize covariance matrix P with reasonable uncertainty
   let P = [
-    [1000, 0],
-    [0, 1000],
+    [100, 0],     // Reduced initial uncertainty for better convergence
+    [0, 1]        // Beta has smaller initial uncertainty
   ]
+  
+  // Process noise matrix Q
   const Q = [
     [processNoise, 0],
-    [0, processNoise],
+    [0, processNoise]
   ]
 
   const hedgeRatios = []
   const alphas = []
 
+  // Fill initial values for the first initialLookback days
   for (let i = 0; i < initialLookback; i++) {
     hedgeRatios.push(initialBeta)
     alphas.push(initialAlpha)
   }
 
+  // Process remaining data points with Kalman filter
   for (let i = initialLookback; i < n; i++) {
     const priceA = typeof pricesA[i].close === "string" ? Number.parseFloat(pricesA[i].close) : pricesA[i].close
     const priceB = typeof pricesB[i].close === "string" ? Number.parseFloat(pricesB[i].close) : pricesB[i].close
 
+    // Prediction step
+    // x_pred = F @ x (F is identity, so x_pred = x)
     const x_pred = [...x]
+    
+    // P_pred = F @ P @ F.T + Q (F is identity, so P_pred = P + Q)
     const P_pred = matrixAdd2x2(P, Q)
 
+    // Update step
+    // Observation matrix H_t = [1, priceB]
     const H_t = [1, priceB]
-    const predicted_y = H_t[0] * x_pred[0] + H_t[1] * x_pred[1]
+    
+    // Innovation: y - H @ x_pred
+    const predicted_y = H_t[0] * x_pred[0] + H_t[1] * x_pred[1] // H_t @ x_pred
     const innovation = priceA - predicted_y
 
-    const H_P_pred = [P_pred[0][0] * H_t[0] + P_pred[0][1] * H_t[1], P_pred[1][0] * H_t[0] + P_pred[1][1] * H_t[1]]
-    const innovation_covariance = H_P_pred[0] * H_t[0] + H_P_pred[1] * H_t[1] + adaptiveR
+    // Innovation covariance: H @ P_pred @ H.T + R
+    // H @ P_pred = [P_pred[0][0] + priceB*P_pred[1][0], P_pred[0][1] + priceB*P_pred[1][1]]
+    const H_P_pred_0 = P_pred[0][0] + priceB * P_pred[1][0]
+    const H_P_pred_1 = P_pred[0][1] + priceB * P_pred[1][1]
+    
+    // (H @ P_pred) @ H.T = H_P_pred_0 * 1 + H_P_pred_1 * priceB
+    const innovation_covariance = H_P_pred_0 + H_P_pred_1 * priceB + R // scalar
 
-    const P_pred_H_T = [P_pred[0][0] * H_t[0] + P_pred[0][1] * H_t[1], P_pred[1][0] * H_t[0] + P_pred[1][1] * H_t[1]]
-    const K = [
-      P_pred_H_T[0] * scalarInverse(innovation_covariance),
-      P_pred_H_T[1] * scalarInverse(innovation_covariance),
-    ]
+    // Kalman gain: P_pred @ H.T @ inv(innovation_covariance)
+    const K_0 = (P_pred[0][0] + P_pred[0][1] * priceB) / innovation_covariance
+    const K_1 = (P_pred[1][0] + P_pred[1][1] * priceB) / innovation_covariance
+    const K = [K_0, K_1]
 
+    // Update state: x = x_pred + K @ innovation
     x = [x_pred[0] + K[0] * innovation, x_pred[1] + K[1] * innovation]
 
+    // Update covariance: P = (I - K @ H) @ P_pred
+    // K @ H where K is 2x1 and H is 1x2, result is 2x2
     const K_H = [
-      [K[0] * H_t[0], K[0] * H_t[1]],
-      [K[1] * H_t[0], K[1] * H_t[1]],
+      [K[0] * H_t[0], K[0] * H_t[1]], // [K[0] * 1, K[0] * priceB]
+      [K[1] * H_t[0], K[1] * H_t[1]]  // [K[1] * 1, K[1] * priceB]
     ]
+    
     const I_minus_KH = matrixSubtract2x2(
       [
         [1, 0],
-        [0, 1],
+        [0, 1]
       ],
-      K_H,
+      K_H
     )
     P = matrixMultiply2x2(I_minus_KH, P_pred)
 
+    // Store results
     alphas.push(x[0])
     hedgeRatios.push(x[1])
   }
