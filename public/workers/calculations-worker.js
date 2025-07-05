@@ -321,20 +321,33 @@ const kalmanFilter = (pricesA, pricesB, processNoise, measurementNoise, initialL
       const residual = priceA - predicted
       residualSumSquares += residual * residual
     }
-    // Use sample variance with correct degrees of freedom
-    R = residualSumSquares / Math.max(1, initialLookback - 2)
+    // Use sample variance: sum of squared residuals divided by degrees of freedom
+    const degreesOfFreedom = Math.max(1, initialLookback - 2) // n - 2 for OLS with intercept and slope
+    R = residualSumSquares / degreesOfFreedom
+    
+    // Debug logging for comparison with other implementations
+    self.postMessage({ 
+      type: "debug", 
+      message: `📊 Kalman R calculation: RSS=${residualSumSquares.toFixed(6)}, DOF=${degreesOfFreedom}, R=${R.toFixed(6)}` 
+    })
   }
   
-  // Ensure R is positive and reasonable
-  R = Math.max(R, 1e-6)
+  // Ensure R is positive and reasonable (but don't make it too large)
+  R = Math.max(R, 1e-8)
+  
+  // Additional debug info for initial parameters
+  self.postMessage({ 
+    type: "debug", 
+    message: `🔧 Kalman Init: α=${initialAlpha.toFixed(6)}, β=${initialBeta.toFixed(6)}, R=${R.toFixed(6)}, Q=${processNoise}` 
+  })
 
   // Initialize state vector [alpha, beta]
   let x = [initialAlpha, initialBeta]
   
-  // Initialize covariance matrix P with reasonable uncertainty
+  // Initialize covariance matrix P to match standard implementations
   let P = [
-    [100, 0],     // Reduced initial uncertainty for better convergence
-    [0, 1]        // Beta has smaller initial uncertainty
+    [0.1, 0],     // Standard initial uncertainty for alpha
+    [0, 0.1]      // Standard initial uncertainty for beta
   ]
   
   // Process noise matrix Q
@@ -403,6 +416,14 @@ const kalmanFilter = (pricesA, pricesB, processNoise, measurementNoise, initialL
       K_H
     )
     P = matrixMultiply2x2(I_minus_KH, P_pred)
+
+    // Debug output for first few iterations to help with comparison
+    if (i < initialLookback + 3) {
+      self.postMessage({ 
+        type: "debug", 
+        message: `🔄 Kalman Step ${i}: PA=${priceA.toFixed(2)}, PB=${priceB.toFixed(2)}, α=${x[0].toFixed(6)}, β=${x[1].toFixed(6)}, K=[${K[0].toFixed(6)}, ${K[1].toFixed(6)}]` 
+      })
+    }
 
     // Store results
     alphas.push(x[0])
