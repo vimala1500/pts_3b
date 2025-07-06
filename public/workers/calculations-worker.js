@@ -323,21 +323,17 @@ const kalmanFilter = (pricesA, pricesB, processNoise, measurementNoise, initialL
     }
     // Use sample variance: sum of squared residuals divided by degrees of freedom
     const degreesOfFreedom = Math.max(1, initialLookback - 2) // n - 2 for OLS with intercept and slope
-    const rawR = residualSumSquares / degreesOfFreedom
-    
-    // CRITICAL FIX: Scale R to match academic implementations
-    // Many implementations use a fraction of the residual variance
-    R = Math.min(rawR * 0.01, 0.1) // Use 1% of residual variance, capped at 0.1
+    R = residualSumSquares / degreesOfFreedom
     
     // Debug logging for comparison with other implementations
     self.postMessage({ 
       type: "debug", 
-      message: `📊 Kalman R calculation: RSS=${residualSumSquares.toFixed(6)}, DOF=${degreesOfFreedom}, rawR=${rawR.toFixed(6)}, scaledR=${R.toFixed(6)}` 
+      message: `📊 Kalman R calculation: RSS=${residualSumSquares.toFixed(6)}, DOF=${degreesOfFreedom}, R=${R.toFixed(6)}` 
     })
   }
   
   // Ensure R is positive and reasonable
-  R = Math.max(R, 1e-6)
+  R = Math.max(R, 1e-8)
   
   // Additional debug info for initial parameters
   self.postMessage({ 
@@ -397,6 +393,14 @@ const kalmanFilter = (pricesA, pricesB, processNoise, measurementNoise, initialL
     // (H @ P_pred) @ H.T = H_P_pred_0 * 1 + H_P_pred_1 * priceB
     const innovation_covariance = H_P_pred_0 + H_P_pred_1 * priceB + R // scalar
 
+    // Safety check: prevent division by very small numbers
+    if (innovation_covariance < 1e-10) {
+      self.postMessage({ 
+        type: "debug", 
+        message: `⚠️ WARNING: Innovation covariance too small (${innovation_covariance.toExponential(3)}) at step ${i}. This may cause numerical instability.` 
+      })
+    }
+
     // Kalman gain: P_pred @ H.T @ inv(innovation_covariance)
     const K_0 = (P_pred[0][0] + P_pred[0][1] * priceB) / innovation_covariance
     const K_1 = (P_pred[1][0] + P_pred[1][1] * priceB) / innovation_covariance
@@ -423,9 +427,10 @@ const kalmanFilter = (pricesA, pricesB, processNoise, measurementNoise, initialL
 
     // Debug output for first few iterations to help with comparison
     if (i < initialLookback + 3) {
+      const currentSpread = priceA - (x[0] + x[1] * priceB)
       self.postMessage({ 
         type: "debug", 
-        message: `🔄 Kalman Step ${i}: PA=${priceA.toFixed(2)}, PB=${priceB.toFixed(2)}, α=${x[0].toFixed(6)}, β=${x[1].toFixed(6)}, K=[${K[0].toFixed(6)}, ${K[1].toFixed(6)}]` 
+        message: `🔄 Kalman Step ${i}: PA=${priceA.toFixed(2)}, PB=${priceB.toFixed(2)}, α=${x[0].toFixed(6)}, β=${x[1].toFixed(6)}, spread=${currentSpread.toFixed(6)}, innovation=${innovation.toFixed(6)}` 
       })
     }
 
