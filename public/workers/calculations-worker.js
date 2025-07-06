@@ -284,7 +284,7 @@ const calculateHedgeRatio = (pricesA, pricesB, currentIndex, windowSize) => {
   return { beta, alpha }
 }
 
-// Kalman filter implementation
+// Corrected Kalman filter implementation
 const kalmanFilter = (pricesA, pricesB, processNoise, measurementNoise, initialLookback) => {
   const n = pricesA.length
 
@@ -292,10 +292,8 @@ const kalmanFilter = (pricesA, pricesB, processNoise, measurementNoise, initialL
     return { hedgeRatios: Array(n).fill(1), alphas: Array(n).fill(0) }
   }
 
-  let sumA = 0,
-    sumB = 0,
-    sumAB = 0,
-    sumB2 = 0
+  // Initialize with OLS regression on first initialLookback days
+  let sumA = 0, sumB = 0, sumAB = 0, sumB2 = 0
   for (let i = 0; i < initialLookback; i++) {
     const priceA = typeof pricesA[i].close === "string" ? Number.parseFloat(pricesA[i].close) : pricesA[i].close
     const priceB = typeof pricesB[i].close === "string" ? Number.parseFloat(pricesB[i].close) : pricesB[i].close
@@ -312,69 +310,183 @@ const kalmanFilter = (pricesA, pricesB, processNoise, measurementNoise, initialL
   const initialBeta = Math.abs(denominator) > 1e-10 ? numerator / denominator : 1.0
   const initialAlpha = meanA - initialBeta * meanB
 
-  let residualSumSquares = 0
-  for (let i = 0; i < initialLookback; i++) {
-    const priceA = typeof pricesA[i].close === "string" ? Number.parseFloat(pricesA[i].close) : pricesA[i].close
-    const priceB = typeof pricesB[i].close === "string" ? Number.parseFloat(pricesB[i].close) : pricesB[i].close
-    const predicted = initialAlpha + initialBeta * priceB
-    const residual = priceA - predicted
-    residualSumSquares += residual * residual
+  // Calculate measurement noise R - use provided value or estimate from OLS residuals
+  let R = measurementNoise
+  if (!R || R <= 0) {
+    let residualSumSquares = 0
+    for (let i = 0; i < initialLookback; i++) {
+      const priceA = typeof pricesA[i].close === "string" ? Number.parseFloat(pricesA[i].close) : pricesA[i].close
+      const priceB = typeof pricesB[i].close === "string" ? Number.parseFloat(pricesB[i].close) : pricesB[i].close
+      const predicted = initialAlpha + initialBeta * priceB
+      const residual = priceA - predicted
+      residualSumSquares += residual * residual
+    }
+    // Use sample variance: sum of squared residuals divided by degrees of freedom
+    const degreesOfFreedom = Math.max(1, initialLookback - 2) // n - 2 for OLS with intercept and slope
+    R = residualSumSquares / degreesOfFreedom
+    
+    // Debug logging for comparison with other implementations
+    self.postMessage({ 
+      type: "debug", 
+      message: `📊 Kalman R calculation: RSS=${residualSumSquares.toFixed(6)}, DOF=${degreesOfFreedom}, R=${R.toFixed(6)}` 
+    })
   }
-  const adaptiveR = residualSumSquares / (initialLookback - 2)
+  
+  // Ensure R is positive and reasonable
+  R = Math.max(R, 1e-8)
+  
+  // Additional debug info for initial parameters
+  self.postMessage({ 
+    type: "debug", 
+    message: `🔧 Kalman Init: α=${initialAlpha.toFixed(6)}, β=${initialBeta.toFixed(6)}, R=${R.toFixed(6)}, Q=${processNoise}, n=${n}, lookback=${initialLookback}` 
+  })
+  
+  self.postMessage({ 
+    type: "debug", 
+    message: `📊 WORKER VERSION CHECK: Kalman Debug v2024-12-23 15:45:00 - MEASUREMENT NOISE FIX - Ready to process ${n - initialLookback} Kalman steps` 
+  })
 
+  // Initialize state vector [alpha, beta]
   let x = [initialAlpha, initialBeta]
+  
+  // Initialize covariance matrix P to match standard implementations
   let P = [
-    [1000, 0],
-    [0, 1000],
+    [0.1, 0],     // Standard initial uncertainty for alpha
+    [0, 0.1]      // Standard initial uncertainty for beta
   ]
+  
+  // Process noise matrix Q
   const Q = [
     [processNoise, 0],
-    [0, processNoise],
+    [0, processNoise]
   ]
 
   const hedgeRatios = []
   const alphas = []
 
+  // Fill initial values for the first initialLookback days
   for (let i = 0; i < initialLookback; i++) {
     hedgeRatios.push(initialBeta)
     alphas.push(initialAlpha)
   }
 
+  // Process remaining data points with Kalman filter
   for (let i = initialLookback; i < n; i++) {
     const priceA = typeof pricesA[i].close === "string" ? Number.parseFloat(pricesA[i].close) : pricesA[i].close
     const priceB = typeof pricesB[i].close === "string" ? Number.parseFloat(pricesB[i].close) : pricesB[i].close
 
+    // Prediction step
+    // x_pred = F @ x (F is identity, so x_pred = x)
     const x_pred = [...x]
+    
+    // P_pred = F @ P @ F.T + Q (F is identity, so P_pred = P + Q)
     const P_pred = matrixAdd2x2(P, Q)
 
+    // Update step
+    // Observation matrix H_t = [1, priceB]
     const H_t = [1, priceB]
-    const predicted_y = H_t[0] * x_pred[0] + H_t[1] * x_pred[1]
+    
+    // Innovation: y - H @ x_pred
+    const predicted_y = H_t[0] * x_pred[0] + H_t[1] * x_pred[1] // H_t @ x_pred
     const innovation = priceA - predicted_y
 
-    const H_P_pred = [P_pred[0][0] * H_t[0] + P_pred[0][1] * H_t[1], P_pred[1][0] * H_t[0] + P_pred[1][1] * H_t[1]]
-    const innovation_covariance = H_P_pred[0] * H_t[0] + H_P_pred[1] * H_t[1] + adaptiveR
+    // Innovation covariance: H @ P_pred @ H.T + R
+    // H @ P_pred = [P_pred[0][0] + priceB*P_pred[1][0], P_pred[0][1] + priceB*P_pred[1][1]]
+    const H_P_pred_0 = P_pred[0][0] + priceB * P_pred[1][0]
+    const H_P_pred_1 = P_pred[0][1] + priceB * P_pred[1][1]
+    
+    // (H @ P_pred) @ H.T = H_P_pred_0 * 1 + H_P_pred_1 * priceB
+    const innovation_covariance = H_P_pred_0 + H_P_pred_1 * priceB + R // scalar
 
-    const P_pred_H_T = [P_pred[0][0] * H_t[0] + P_pred[0][1] * H_t[1], P_pred[1][0] * H_t[0] + P_pred[1][1] * H_t[1]]
-    const K = [
-      P_pred_H_T[0] * scalarInverse(innovation_covariance),
-      P_pred_H_T[1] * scalarInverse(innovation_covariance),
-    ]
+    // Safety check: prevent division by very small numbers
+    if (innovation_covariance < 1e-10) {
+      self.postMessage({ 
+        type: "debug", 
+        message: `⚠️ WARNING: Innovation covariance too small (${innovation_covariance.toExponential(3)}) at step ${i}. This may cause numerical instability.` 
+      })
+    }
 
+    // Kalman gain: P_pred @ H.T @ inv(innovation_covariance)
+    const K_0 = (P_pred[0][0] + P_pred[0][1] * priceB) / innovation_covariance
+    const K_1 = (P_pred[1][0] + P_pred[1][1] * priceB) / innovation_covariance
+    const K = [K_0, K_1]
+    
+    // Debug: Check if Kalman gains are too small (indicating overfitting)
+    if (Math.abs(K[0]) < 1e-6 && Math.abs(K[1]) < 1e-6) {
+      self.postMessage({ 
+        type: "debug", 
+        message: `⚠️ WARNING: Kalman gains extremely small at step ${i}. Filter may be overfitting. Consider increasing measurement noise R.` 
+      })
+    }
+
+    // Update state: x = x_pred + K @ innovation
     x = [x_pred[0] + K[0] * innovation, x_pred[1] + K[1] * innovation]
+    
+    // Safety check: prevent NaN/Infinity in state values
+    if (isNaN(x[0]) || isNaN(x[1]) || !isFinite(x[0]) || !isFinite(x[1])) {
+      self.postMessage({ 
+        type: "debug", 
+        message: `⚠️ CRITICAL: State values became NaN/Infinity at step ${i}. Resetting to OLS values.` 
+      })
+      x = [initialAlpha, initialBeta]
+    }
 
+    // Update covariance: P = (I - K @ H) @ P_pred
+    // K @ H where K is 2x1 and H is 1x2, result is 2x2
     const K_H = [
-      [K[0] * H_t[0], K[0] * H_t[1]],
-      [K[1] * H_t[0], K[1] * H_t[1]],
+      [K[0] * H_t[0], K[0] * H_t[1]], // [K[0] * 1, K[0] * priceB]
+      [K[1] * H_t[0], K[1] * H_t[1]]  // [K[1] * 1, K[1] * priceB]
     ]
+    
     const I_minus_KH = matrixSubtract2x2(
       [
         [1, 0],
-        [0, 1],
+        [0, 1]
       ],
-      K_H,
+      K_H
     )
     P = matrixMultiply2x2(I_minus_KH, P_pred)
+    
+    // CRITICAL FIX: Ensure covariance matrix stays positive definite
+    // Check for numerical instability
+    if (P[0][0] < 1e-12 || P[1][1] < 1e-12 || isNaN(P[0][0]) || isNaN(P[1][1])) {
+      self.postMessage({ 
+        type: "debug", 
+        message: `⚠️ CRITICAL: Covariance matrix becoming singular at step ${i}. Resetting to prevent numerical collapse.` 
+      })
+      P = [
+        [0.01, 0],
+        [0, 0.01]
+      ]
+    }
 
+    // Enhanced debug output for first few iterations + periodic updates
+    if (i < initialLookback + 5 || i % 20 === 0) {
+      const currentSpread = priceA - (x[0] + x[1] * priceB)
+      const predictedPrice = x[0] + x[1] * priceB
+      self.postMessage({ 
+        type: "debug", 
+        message: `🔄 Kalman Step ${i}: PA=${priceA.toFixed(2)}, PB=${priceB.toFixed(2)}, predicted=${predictedPrice.toFixed(8)}, spread=${currentSpread.toFixed(8)}, α=${x[0].toFixed(6)}, β=${x[1].toFixed(6)}` 
+      })
+      self.postMessage({ 
+        type: "debug", 
+        message: `   Details: innovation=${innovation.toFixed(6)}, inn_cov=${innovation_covariance.toFixed(2)}, R=${R.toFixed(6)}` 
+      })
+      
+      // Additional debug for covariance matrix
+      if (i < initialLookback + 3) {
+        self.postMessage({ 
+          type: "debug", 
+          message: `   P_matrix: [[${P[0][0].toFixed(8)}, ${P[0][1].toFixed(8)}], [${P[1][0].toFixed(8)}, ${P[1][1].toFixed(8)}]]` 
+        })
+        self.postMessage({ 
+          type: "debug", 
+          message: `   K_gains: [${K[0].toFixed(8)}, ${K[1].toFixed(8)}]` 
+        })
+      }
+    }
+
+    // Store results
     alphas.push(x[0])
     hedgeRatios.push(x[1])
   }
@@ -644,6 +756,9 @@ const adfTestWasmEnhanced = async (data, seriesType, modelType) => {
     return { statistic: 0, pValue: 1, criticalValues: { "1%": 0, "5%": 0, "10%": 0 }, isStationary: false }
   }
 }
+
+// KALMAN FILTER DEBUG VERSION - Updated at 2024-12-23 15:45:00
+console.log("🚀 KALMAN DEBUG WORKER LOADED - Version 2024-12-23 15:45:00 - MEASUREMENT NOISE FIX")
 
 // Main message handler for the worker
 self.onmessage = async (event) => {

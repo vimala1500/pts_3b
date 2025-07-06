@@ -15,7 +15,9 @@ let calculationsWorker: Worker | null = null
 export function getCalculationsWorker(): Worker {
   if (!calculationsWorker) {
     console.log("Instantiating calculations worker (first access)...")
-    calculationsWorker = new Worker("/workers/calculations-worker.js", { type: "module" })
+    // Add cache-busting parameter to force reload of updated worker
+    const cacheBuster = `?v=${Date.now()}_kalman_debug_noise_fix`
+    calculationsWorker = new Worker(`/workers/calculations-worker.js${cacheBuster}`, { type: "module" })
     // Attach global message/error handlers for debugging or general worker status
     calculationsWorker.onmessage = (event) => {
       if (event.data.type === "debug") {
@@ -31,6 +33,18 @@ export function getCalculationsWorker(): Worker {
     }
   }
   return calculationsWorker
+}
+
+/**
+ * Force reload the calculations worker (useful when worker code is updated)
+ */
+export function reloadCalculationsWorker(): Worker {
+  if (calculationsWorker) {
+    console.log("Terminating existing worker to reload...")
+    calculationsWorker.terminate()
+    calculationsWorker = null
+  }
+  return getCalculationsWorker()
 }
 
 function MyApp({ Component, pageProps }) {
