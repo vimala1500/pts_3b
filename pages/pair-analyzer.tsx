@@ -93,7 +93,7 @@ export default function PairAnalyzer() {
   const [ratioLookbackWindow, setRatioLookbackWindow] = useState(60)
   const [olsLookbackWindow, setOlsLookbackWindow] = useState(60)
   const [kalmanProcessNoise, setKalmanProcessNoise] = useState(0.0001)
-  const [kalmanMeasurementNoise, setKalmanMeasurementNoise] = useState(1.0) // Note: This is currently unused in the worker's Kalman, but kept for UI consistency
+  const [kalmanMeasurementNoise, setKalmanMeasurementNoise] = useState(0.0) // Set to 0 to force calculation from residuals like Gemini
   const [kalmanInitialLookback, setKalmanInitialLookback] = useState(60)
   const [euclideanLookbackWindow, setEuclideanLookbackWindow] = useState(60)
 
