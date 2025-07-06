@@ -338,7 +338,12 @@ const kalmanFilter = (pricesA, pricesB, processNoise, measurementNoise, initialL
   // Additional debug info for initial parameters
   self.postMessage({ 
     type: "debug", 
-    message: `🔧 Kalman Init: α=${initialAlpha.toFixed(6)}, β=${initialBeta.toFixed(6)}, R=${R.toFixed(6)}, Q=${processNoise}` 
+    message: `🔧 Kalman Init: α=${initialAlpha.toFixed(6)}, β=${initialBeta.toFixed(6)}, R=${R.toFixed(6)}, Q=${processNoise}, n=${n}, lookback=${initialLookback}` 
+  })
+  
+  self.postMessage({ 
+    type: "debug", 
+    message: `📊 WORKER VERSION CHECK: Kalman Debug v2024-12-23 15:30:00 - Ready to process ${n - initialLookback} Kalman steps` 
   })
 
   // Initialize state vector [alpha, beta]
@@ -408,6 +413,15 @@ const kalmanFilter = (pricesA, pricesB, processNoise, measurementNoise, initialL
 
     // Update state: x = x_pred + K @ innovation
     x = [x_pred[0] + K[0] * innovation, x_pred[1] + K[1] * innovation]
+    
+    // Safety check: prevent NaN/Infinity in state values
+    if (isNaN(x[0]) || isNaN(x[1]) || !isFinite(x[0]) || !isFinite(x[1])) {
+      self.postMessage({ 
+        type: "debug", 
+        message: `⚠️ CRITICAL: State values became NaN/Infinity at step ${i}. Resetting to OLS values.` 
+      })
+      x = [initialAlpha, initialBeta]
+    }
 
     // Update covariance: P = (I - K @ H) @ P_pred
     // K @ H where K is 2x1 and H is 1x2, result is 2x2
@@ -424,14 +438,39 @@ const kalmanFilter = (pricesA, pricesB, processNoise, measurementNoise, initialL
       K_H
     )
     P = matrixMultiply2x2(I_minus_KH, P_pred)
+    
+    // CRITICAL FIX: Ensure covariance matrix stays positive definite
+    // Check for numerical instability
+    if (P[0][0] < 1e-12 || P[1][1] < 1e-12 || isNaN(P[0][0]) || isNaN(P[1][1])) {
+      self.postMessage({ 
+        type: "debug", 
+        message: `⚠️ CRITICAL: Covariance matrix becoming singular at step ${i}. Resetting to prevent numerical collapse.` 
+      })
+      P = [
+        [0.01, 0],
+        [0, 0.01]
+      ]
+    }
 
-    // Debug output for first few iterations to help with comparison
-    if (i < initialLookback + 3) {
+    // Enhanced debug output for first few iterations + periodic updates
+    if (i < initialLookback + 5 || i % 20 === 0) {
       const currentSpread = priceA - (x[0] + x[1] * priceB)
       self.postMessage({ 
         type: "debug", 
-        message: `🔄 Kalman Step ${i}: PA=${priceA.toFixed(2)}, PB=${priceB.toFixed(2)}, α=${x[0].toFixed(6)}, β=${x[1].toFixed(6)}, spread=${currentSpread.toFixed(6)}, innovation=${innovation.toFixed(6)}` 
+        message: `🔄 Kalman Step ${i}: PA=${priceA.toFixed(2)}, PB=${priceB.toFixed(2)}, α=${x[0].toFixed(6)}, β=${x[1].toFixed(6)}, spread=${currentSpread.toFixed(6)}, innovation=${innovation.toFixed(6)}, inn_cov=${innovation_covariance.toFixed(8)}` 
       })
+      
+      // Additional debug for covariance matrix
+      if (i < initialLookback + 3) {
+        self.postMessage({ 
+          type: "debug", 
+          message: `   P_matrix: [[${P[0][0].toFixed(8)}, ${P[0][1].toFixed(8)}], [${P[1][0].toFixed(8)}, ${P[1][1].toFixed(8)}]]` 
+        })
+        self.postMessage({ 
+          type: "debug", 
+          message: `   K_gains: [${K[0].toFixed(8)}, ${K[1].toFixed(8)}]` 
+        })
+      }
     }
 
     // Store results
@@ -704,6 +743,9 @@ const adfTestWasmEnhanced = async (data, seriesType, modelType) => {
     return { statistic: 0, pValue: 1, criticalValues: { "1%": 0, "5%": 0, "10%": 0 }, isStationary: false }
   }
 }
+
+// KALMAN FILTER DEBUG VERSION - Updated at 2024-12-23 15:30:00
+console.log("🚀 KALMAN DEBUG WORKER LOADED - Version 2024-12-23 15:30:00")
 
 // Main message handler for the worker
 self.onmessage = async (event) => {
