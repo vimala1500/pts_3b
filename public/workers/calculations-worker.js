@@ -323,17 +323,21 @@ const kalmanFilter = (pricesA, pricesB, processNoise, measurementNoise, initialL
     }
     // Use sample variance: sum of squared residuals divided by degrees of freedom
     const degreesOfFreedom = Math.max(1, initialLookback - 2) // n - 2 for OLS with intercept and slope
-    R = residualSumSquares / degreesOfFreedom
+    const rawR = residualSumSquares / degreesOfFreedom
+    
+    // CRITICAL FIX: Scale R to match academic implementations
+    // Many implementations use a fraction of the residual variance
+    R = Math.min(rawR * 0.01, 0.1) // Use 1% of residual variance, capped at 0.1
     
     // Debug logging for comparison with other implementations
     self.postMessage({ 
       type: "debug", 
-      message: `📊 Kalman R calculation: RSS=${residualSumSquares.toFixed(6)}, DOF=${degreesOfFreedom}, R=${R.toFixed(6)}` 
+      message: `📊 Kalman R calculation: RSS=${residualSumSquares.toFixed(6)}, DOF=${degreesOfFreedom}, rawR=${rawR.toFixed(6)}, scaledR=${R.toFixed(6)}` 
     })
   }
   
-  // Ensure R is positive and reasonable (but don't make it too large)
-  R = Math.max(R, 1e-8)
+  // Ensure R is positive and reasonable
+  R = Math.max(R, 1e-6)
   
   // Additional debug info for initial parameters
   self.postMessage({ 
