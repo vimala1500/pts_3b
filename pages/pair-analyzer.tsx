@@ -17,7 +17,7 @@ import {
   BarChart,
   Bar,
 } from "recharts"
-import { getCalculationsWorker } from "../pages/_app" // Import the getter function for the shared worker
+import { getCalculationsWorker, reloadCalculationsWorker } from "../pages/_app" // Import the getter function for the shared worker
 
 // Matrix operations for 2x2 matrices (these are no longer directly used in pair-analyzer.tsx, but kept for completeness if other parts of the app still use them)
 const matrixMultiply2x2 = (A: number[][], B: number[][]): number[][] => {
@@ -520,7 +520,7 @@ export default function PairAnalyzer() {
           </div>
         </div>
 
-        <div className="flex justify-center mt-8">
+        <div className="flex justify-center items-center gap-4 mt-8">
           <button onClick={runAnalysis} disabled={isLoading} className="btn-primary">
             {isLoading ? (
               <span className="flex items-center">
@@ -542,6 +542,16 @@ export default function PairAnalyzer() {
             ) : (
               "Run Analysis"
             )}
+          </button>
+          <button 
+            onClick={() => {
+              reloadCalculationsWorker()
+              alert("Worker reloaded! Updated Kalman filter should now be active.")
+            }} 
+            className="btn-secondary text-sm"
+            title="Force reload the Web Worker to use updated calculations"
+          >
+            🔄 Reload Worker
           </button>
         </div>
       </div>
