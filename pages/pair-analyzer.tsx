@@ -93,7 +93,7 @@ export default function PairAnalyzer() {
   const [ratioLookbackWindow, setRatioLookbackWindow] = useState(60)
   const [olsLookbackWindow, setOlsLookbackWindow] = useState(60)
   const [kalmanProcessNoise, setKalmanProcessNoise] = useState(0.0001)
-  const [kalmanMeasurementNoise, setKalmanMeasurementNoise] = useState(0.0001) // Use small value close to process noise
+  const [kalmanMeasurementNoise, setKalmanMeasurementNoise] = useState(0.1) // Balanced measurement noise to prevent overfitting while maintaining responsiveness
   const [kalmanInitialLookback, setKalmanInitialLookback] = useState(60)
   const [euclideanLookbackWindow, setEuclideanLookbackWindow] = useState(60)
 
@@ -405,7 +405,7 @@ export default function PairAnalyzer() {
                   <div>
                     <label className="block text-base font-medium text-gray-300 mb-2">Kalman Filter Parameters</label>
                     <p className="mt-1 text-sm text-gray-400">
-                      Improved 2D Kalman filter tracks both alpha and beta. Process noise controls adaptation speed.
+                      Improved 2D Kalman filter tracks both alpha and beta. Process noise controls adaptation speed, measurement noise prevents overfitting.
                     </p>
                     <div className="grid grid-cols-1 gap-2">
                       <div>
@@ -417,6 +417,18 @@ export default function PairAnalyzer() {
                           min="0.00001"
                           max="0.01"
                           step="0.00001"
+                          className="input-field"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-400 mb-1">Measurement Noise</label>
+                        <input
+                          type="number"
+                          value={kalmanMeasurementNoise}
+                          onChange={(e) => setKalmanMeasurementNoise(Number.parseFloat(e.target.value))}
+                          min="0.001"
+                          max="10"
+                          step="0.001"
                           className="input-field"
                         />
                       </div>

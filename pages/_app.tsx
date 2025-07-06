@@ -16,7 +16,7 @@ export function getCalculationsWorker(): Worker {
   if (!calculationsWorker) {
     console.log("Instantiating calculations worker (first access)...")
     // Add cache-busting parameter to force reload of updated worker
-    const cacheBuster = `?v=${Date.now()}_kalman_debug`
+    const cacheBuster = `?v=${Date.now()}_kalman_debug_noise_fix`
     calculationsWorker = new Worker(`/workers/calculations-worker.js${cacheBuster}`, { type: "module" })
     // Attach global message/error handlers for debugging or general worker status
     calculationsWorker.onmessage = (event) => {

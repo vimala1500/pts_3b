@@ -343,7 +343,7 @@ const kalmanFilter = (pricesA, pricesB, processNoise, measurementNoise, initialL
   
   self.postMessage({ 
     type: "debug", 
-    message: `📊 WORKER VERSION CHECK: Kalman Debug v2024-12-23 15:30:00 - Ready to process ${n - initialLookback} Kalman steps` 
+    message: `📊 WORKER VERSION CHECK: Kalman Debug v2024-12-23 15:45:00 - MEASUREMENT NOISE FIX - Ready to process ${n - initialLookback} Kalman steps` 
   })
 
   // Initialize state vector [alpha, beta]
@@ -410,6 +410,14 @@ const kalmanFilter = (pricesA, pricesB, processNoise, measurementNoise, initialL
     const K_0 = (P_pred[0][0] + P_pred[0][1] * priceB) / innovation_covariance
     const K_1 = (P_pred[1][0] + P_pred[1][1] * priceB) / innovation_covariance
     const K = [K_0, K_1]
+    
+    // Debug: Check if Kalman gains are too small (indicating overfitting)
+    if (Math.abs(K[0]) < 1e-6 && Math.abs(K[1]) < 1e-6) {
+      self.postMessage({ 
+        type: "debug", 
+        message: `⚠️ WARNING: Kalman gains extremely small at step ${i}. Filter may be overfitting. Consider increasing measurement noise R.` 
+      })
+    }
 
     // Update state: x = x_pred + K @ innovation
     x = [x_pred[0] + K[0] * innovation, x_pred[1] + K[1] * innovation]
@@ -455,9 +463,14 @@ const kalmanFilter = (pricesA, pricesB, processNoise, measurementNoise, initialL
     // Enhanced debug output for first few iterations + periodic updates
     if (i < initialLookback + 5 || i % 20 === 0) {
       const currentSpread = priceA - (x[0] + x[1] * priceB)
+      const predictedPrice = x[0] + x[1] * priceB
       self.postMessage({ 
         type: "debug", 
-        message: `🔄 Kalman Step ${i}: PA=${priceA.toFixed(2)}, PB=${priceB.toFixed(2)}, α=${x[0].toFixed(6)}, β=${x[1].toFixed(6)}, spread=${currentSpread.toFixed(6)}, innovation=${innovation.toFixed(6)}, inn_cov=${innovation_covariance.toFixed(8)}` 
+        message: `🔄 Kalman Step ${i}: PA=${priceA.toFixed(2)}, PB=${priceB.toFixed(2)}, predicted=${predictedPrice.toFixed(8)}, spread=${currentSpread.toFixed(8)}, α=${x[0].toFixed(6)}, β=${x[1].toFixed(6)}` 
+      })
+      self.postMessage({ 
+        type: "debug", 
+        message: `   Details: innovation=${innovation.toFixed(6)}, inn_cov=${innovation_covariance.toFixed(2)}, R=${R.toFixed(6)}` 
       })
       
       // Additional debug for covariance matrix
@@ -744,8 +757,8 @@ const adfTestWasmEnhanced = async (data, seriesType, modelType) => {
   }
 }
 
-// KALMAN FILTER DEBUG VERSION - Updated at 2024-12-23 15:30:00
-console.log("🚀 KALMAN DEBUG WORKER LOADED - Version 2024-12-23 15:30:00")
+// KALMAN FILTER DEBUG VERSION - Updated at 2024-12-23 15:45:00
+console.log("🚀 KALMAN DEBUG WORKER LOADED - Version 2024-12-23 15:45:00 - MEASUREMENT NOISE FIX")
 
 // Main message handler for the worker
 self.onmessage = async (event) => {
