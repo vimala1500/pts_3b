@@ -597,7 +597,7 @@ export default function PairAnalyzer() {
                 <div className="space-y-3">
                   <div className="flex justify-between">
                     <span className="text-gray-300">Correlation:</span>
-                    <span className="text-gold-400 font-medium">{analysisData.statistics.correlation.toFixed(4)}</span>
+                                          <span className="text-gold-400 font-medium">{analysisData.statistics.correlation?.toFixed(4) || 'N/A'}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-gray-300">
@@ -609,13 +609,13 @@ export default function PairAnalyzer() {
                           : "Spread"}
                       :
                     </span>
-                    <span className="text-gold-400 font-medium">
-                      {analysisData.statistics.modelType === "ratio"
-                        ? analysisData.statistics.meanRatio.toFixed(4)
-                        : analysisData.statistics.modelType === "euclidean"
-                          ? analysisData.statistics.meanDistance.toFixed(4)
-                          : analysisData.statistics.meanSpread.toFixed(4)}
-                    </span>
+                                    <span className="text-gold-400 font-medium">
+                  {analysisData.statistics.modelType === "ratio"
+                    ? (analysisData.statistics.meanRatio?.toFixed(4) || 'N/A')
+                    : analysisData.statistics.modelType === "euclidean"
+                      ? (analysisData.statistics.meanEuclideanSpread?.toFixed(4) || 'N/A')
+                      : (analysisData.statistics.meanSpread?.toFixed(4) || 'N/A')}
+                </span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-gray-300">
@@ -627,21 +627,21 @@ export default function PairAnalyzer() {
                           : "Spread"}
                       :
                     </span>
-                    <span className="text-gold-400 font-medium">
-                      {analysisData.statistics.modelType === "ratio"
-                        ? analysisData.statistics.stdDevRatio.toFixed(4)
-                        : analysisData.statistics.modelType === "euclidean"
-                          ? analysisData.statistics.stdDevDistance.toFixed(4)
-                          : analysisData.statistics.stdDevSpread.toFixed(4)}
-                    </span>
+                                    <span className="text-gold-400 font-medium">
+                  {analysisData.statistics.modelType === "ratio"
+                    ? (analysisData.statistics.stdDevRatio?.toFixed(4) || 'N/A')
+                    : analysisData.statistics.modelType === "euclidean"
+                      ? (analysisData.statistics.stdDevEuclideanSpread?.toFixed(4) || 'N/A')
+                      : (analysisData.statistics.stdDevSpread?.toFixed(4) || 'N/A')}
+                </span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-gray-300">Min Z-score:</span>
-                    <span className="text-gold-400 font-medium">{analysisData.statistics.minZScore.toFixed(4)}</span>
+                                          <span className="text-gold-400 font-medium">{analysisData.statistics.minZScore?.toFixed(4) || 'N/A'}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-gray-300">Max Z-score:</span>
-                    <span className="text-gold-400 font-medium">{analysisData.statistics.maxZScore.toFixed(4)}</span>
+                                          <span className="text-gold-400 font-medium">{analysisData.statistics.maxZScore?.toFixed(4) || 'N/A'}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-gray-300">Statistical Half-Life (days):</span>
@@ -649,7 +649,7 @@ export default function PairAnalyzer() {
                       className={`font-medium ${analysisData.statistics.halfLifeValid ? "text-gold-400" : "text-red-400"}`}
                     >
                       {analysisData.statistics.halfLife > 0
-                        ? `${analysisData.statistics.halfLife.toFixed(2)}${!analysisData.statistics.halfLifeValid ? " (Too slow)" : ""}`
+                        ? `${(analysisData.statistics.halfLife?.toFixed(2) || 'N/A')}${!analysisData.statistics.halfLifeValid ? " (Too slow)" : ""}`
                         : "Invalid"}
                     </span>
                   </div>
@@ -661,9 +661,9 @@ export default function PairAnalyzer() {
                       }`}
                     >
                       {analysisData.statistics.practicalTradeHalfLife.isValid
-                        ? `${analysisData.statistics.practicalTradeHalfLife.tradeCycleLength.toFixed(1)} (${(
-                            analysisData.statistics.practicalTradeHalfLife.successRate * 100
-                          ).toFixed(0)}% success)`
+                                                ? `${(analysisData.statistics.practicalTradeHalfLife?.tradeCycleLength?.toFixed(1) || 'N/A')} (${(
+                          (analysisData.statistics.practicalTradeHalfLife?.successRate * 100)?.toFixed(0) || 'N/A'
+                        )}% success)`
                         : "Insufficient data"}
                     </span>
                   </div>
@@ -678,7 +678,7 @@ export default function PairAnalyzer() {
                             : "text-gold-400"
                       }`}
                     >
-                      {analysisData.statistics.hurstExponent.toFixed(4)}
+                      {analysisData.statistics.hurstExponent?.toFixed(4) || 'N/A'}
                       {analysisData.statistics.hurstExponent < 0.5
                         ? " (Mean-reverting)"
                         : analysisData.statistics.hurstExponent > 0.5
@@ -695,13 +695,13 @@ export default function PairAnalyzer() {
                   <div className="flex justify-between">
                     <span className="text-gray-300">Test Statistic:</span>
                     <span className="text-gold-400 font-medium">
-                      {analysisData.statistics.adfResults.statistic.toFixed(4)}
+                      {analysisData.statistics.adfResults?.statistic?.toFixed(4) || 'N/A'}
                     </span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-gray-300">p-value:</span>
                     <span className="text-gold-400 font-medium">
-                      {analysisData.statistics.adfResults.pValue.toFixed(4)}
+                      {analysisData.statistics.adfResults?.pValue?.toFixed(4) || 'N/A'}
                     </span>
                   </div>
                   <div className="flex justify-between">
@@ -1099,7 +1099,7 @@ export default function PairAnalyzer() {
                   {analysisData.statistics.modelType === "ratio"
                     ? "ratio"
                     : analysisData.statistics.modelType === "euclidean"
-                      ? "Euclidean distance"
+                      ? "spread (Z_A - Z_B) from Gemini's Z-score model"
                       : "spread"}{" "}
                   between {selectedPair.stockA} and {selectedPair.stockB}
                   {plotType === "line"
@@ -1237,7 +1237,7 @@ export default function PairAnalyzer() {
                   {analysisData.statistics.modelType === "ratio"
                     ? "ratio"
                     : analysisData.statistics.modelType === "euclidean"
-                      ? "Euclidean distance"
+                      ? "spread (Z_A - Z_B) - this is the final trading signal from Gemini's model"
                       : "spread"}
                   {plotType === "line"
                     ? ", highlighting regions where z-score > 2 or < -2. These extreme values indicate potential trading opportunities."
@@ -1261,8 +1261,8 @@ export default function PairAnalyzer() {
                           stockA: analysisData.stockAPrices[i],
                           stockB: analysisData.stockBPrices[i],
                           ...(analysisData.statistics.modelType === "euclidean" && {
-                            normalizedA: analysisData.normalizedPricesA[i],
-                            normalizedB: analysisData.normalizedPricesB[i],
+                            zScoreA: analysisData.alphas[i], // Individual Z-score for Stock A
+                            zScoreB: analysisData.hedgeRatios[i], // Individual Z-score for Stock B
                           }),
                         }))}
                         margin={{ top: 5, right: 30, left: 20, bottom: 5 }}
@@ -1299,22 +1299,23 @@ export default function PairAnalyzer() {
                         />
                         {analysisData.statistics.modelType === "euclidean" && (
                           <>
+                            {/* Show Z-scores instead of normalized prices for Gemini model */}
                             <Line
                               yAxisId="left"
                               type="monotone"
-                              dataKey="normalizedA"
-                              stroke="#00bfff" // Light blue for normalized A
+                              dataKey="zScoreA"
+                              stroke="#00bfff" // Light blue for Z-score A
                               dot={false}
-                              name={`${selectedPair.stockA} (Normalized)`}
+                              name={`${selectedPair.stockA} (Z-Score)`}
                               strokeDasharray="5 5"
                             />
                             <Line
                               yAxisId="right"
                               type="monotone"
-                              dataKey="normalizedB"
-                              stroke="#90ee90" // Light green for normalized B
+                              dataKey="zScoreB"
+                              stroke="#90ee90" // Light green for Z-score B
                               dot={false}
-                              name={`${selectedPair.stockB} (Normalized)`}
+                              name={`${selectedPair.stockB} (Z-Score)`}
                               strokeDasharray="5 5"
                             />
                           </>
@@ -1474,8 +1475,8 @@ export default function PairAnalyzer() {
                       <th className="table-header">{selectedPair.stockB} Price</th>
                       {analysisData.statistics.modelType === "euclidean" && (
                         <>
-                          <th className="table-header">Normalized {selectedPair.stockA}</th>
-                          <th className="table-header">Normalized {selectedPair.stockB}</th>
+                          <th className="table-header">Z-Score {selectedPair.stockA}</th>
+                          <th className="table-header">Z-Score {selectedPair.stockB}</th>
                         </>
                       )}
                       {analysisData.statistics.modelType !== "ratio" &&
@@ -1489,7 +1490,7 @@ export default function PairAnalyzer() {
                         {analysisData.statistics.modelType === "ratio"
                           ? "Ratio"
                           : analysisData.statistics.modelType === "euclidean"
-                            ? "Distance"
+                            ? "Spread (Z_A - Z_B)"
                             : "Spread"}
                       </th>
                       <th className="table-header">Z-score</th>
@@ -1500,27 +1501,27 @@ export default function PairAnalyzer() {
                     {analysisData.tableData.map((row, index) => (
                       <tr key={index} className={index % 2 === 0 ? "bg-navy-900/50" : "bg-navy-900/30"}>
                         <td className="table-cell">{row.date}</td>
-                        <td className="table-cell">{row.priceA.toFixed(2)}</td>
-                        <td className="table-cell">{row.priceB.toFixed(2)}</td>
+                        <td className="table-cell">{row.priceA !== undefined ? row.priceA.toFixed(2) : 'N/A'}</td>
+                        <td className="table-cell">{row.priceB !== undefined ? row.priceB.toFixed(2) : 'N/A'}</td>
                         {analysisData.statistics.modelType === "euclidean" && (
                           <>
-                            <td className="table-cell">{row.normalizedA.toFixed(4)}</td>
-                            <td className="table-cell">{row.normalizedB.toFixed(4)}</td>
+                            <td className="table-cell">{row.zScoreA !== undefined ? row.zScoreA.toFixed(4) : 'N/A'}</td>
+                            <td className="table-cell">{row.zScoreB !== undefined ? row.zScoreB.toFixed(4) : 'N/A'}</td>
                           </>
                         )}
                         {analysisData.statistics.modelType !== "ratio" &&
                           analysisData.statistics.modelType !== "euclidean" && (
                             <>
-                              <td className="table-cell">{row.alpha.toFixed(4)}</td>
-                              <td className="table-cell">{row.hedgeRatio.toFixed(4)}</td>
+                                                          <td className="table-cell">{row.alpha !== undefined ? row.alpha.toFixed(4) : 'N/A'}</td>
+                            <td className="table-cell">{row.hedgeRatio !== undefined ? row.hedgeRatio.toFixed(4) : 'N/A'}</td>
                             </>
                           )}
                         <td className="table-cell">
                           {analysisData.statistics.modelType === "ratio"
-                            ? row.ratio.toFixed(4)
+                            ? (row.ratio !== undefined ? row.ratio.toFixed(4) : 'N/A')
                             : analysisData.statistics.modelType === "euclidean"
-                              ? row.distance.toFixed(4)
-                              : row.spread.toFixed(4)}
+                              ? (row.spread !== undefined ? row.spread.toFixed(4) : 'N/A')
+                              : (row.spread !== undefined ? row.spread.toFixed(4) : 'N/A')}
                         </td>
                         <td
                           className={`table-cell font-medium ${
@@ -1531,7 +1532,7 @@ export default function PairAnalyzer() {
                                 : "text-white"
                           }`}
                         >
-                          {row.zScore.toFixed(4)}
+                          {row.zScore !== undefined ? row.zScore.toFixed(4) : 'N/A'}
                         </td>
                         <td className="table-cell">{row.halfLife || "N/A"}</td>
                       </tr>
