@@ -757,8 +757,145 @@ const adfTestWasmEnhanced = async (data, seriesType, modelType) => {
   }
 }
 
+// ===== GEMINI'S Z-SCORE BASED EUCLIDEAN MODEL FUNCTIONS =====
+
+/**
+ * Calculate individual Z-scores for a single stock using rolling windows
+ * Z-score = (Current_Price - Rolling_Mean) / Rolling_StdDev
+ */
+const calculateIndividualZScores = (prices, lookbackWindow) => {
+  const zScores = []
+  
+  self.postMessage({ 
+    type: "debug", 
+    message: `🔍 Individual Z-Score Debug: Processing ${prices.length} prices with lookback ${lookbackWindow}. First 5 prices: [${prices.slice(0, 5).join(', ')}]` 
+  })
+  
+  for (let i = 0; i < prices.length; i++) {
+    if (i < lookbackWindow - 1) {
+      // Not enough data for rolling calculation
+      zScores.push(0)
+      continue
+    }
+    
+    // Get rolling window of prices
+    const windowStart = Math.max(0, i - lookbackWindow + 1)
+    const windowPrices = prices.slice(windowStart, i + 1)
+    
+    // Calculate rolling mean
+    const rollingMean = windowPrices.reduce((sum, price) => sum + price, 0) / windowPrices.length
+    
+    // Calculate rolling standard deviation (use population std dev to avoid division by zero)
+    const variance = windowPrices.reduce((sum, price) => sum + Math.pow(price - rollingMean, 2), 0) / windowPrices.length
+    const rollingStdDev = Math.sqrt(variance)
+    
+    // Calculate Z-score for current price
+    const currentPrice = prices[i]
+    const zScore = rollingStdDev > 0 ? (currentPrice - rollingMean) / rollingStdDev : 0
+    
+    // Debug first few calculations
+    if (i < lookbackWindow + 3) {
+      self.postMessage({ 
+        type: "debug", 
+        message: `🔢 Z-Score[${i}]: price=${currentPrice.toFixed(2)}, mean=${rollingMean.toFixed(2)}, std=${rollingStdDev.toFixed(4)}, z=${zScore.toFixed(4)}` 
+      })
+    }
+    
+    zScores.push(zScore)
+  }
+  
+  self.postMessage({ 
+    type: "debug", 
+    message: `✅ Individual Z-Score Complete: Generated ${zScores.length} z-scores. Range: [${Math.min(...zScores.filter(z => !isNaN(z) && isFinite(z))).toFixed(3)}, ${Math.max(...zScores.filter(z => !isNaN(z) && isFinite(z))).toFixed(3)}]` 
+  })
+  
+  return zScores
+}
+
+/**
+ * Calculate Gemini's Z-Score Based Euclidean Model
+ * Steps:
+ * 1. Calculate individual Z-scores for both stocks
+ * 2. Calculate spread = Z_A - Z_B
+ * 3. Calculate Z-score of the spread (final signal)
+ */
+const calculateGeminiEuclideanModel = (stockAPrices, stockBPrices, lookbackWindow) => {
+  self.postMessage({ 
+    type: "debug", 
+    message: `🧬 Gemini Euclidean Model: Processing ${stockAPrices.length} price points with ${lookbackWindow} day lookback` 
+  })
+  
+  // Step 1: Calculate individual Z-scores for each stock
+  const zScoresA = calculateIndividualZScores(stockAPrices, lookbackWindow)
+  const zScoresB = calculateIndividualZScores(stockBPrices, lookbackWindow)
+  
+  // Step 2: Calculate spread = Z_A - Z_B
+  const spreads = zScoresA.map((zA, i) => zA - zScoresB[i])
+  
+  self.postMessage({ 
+    type: "debug", 
+    message: `🔍 Spread Debug: First 5 Z_A: [${zScoresA.slice(lookbackWindow-1, lookbackWindow+4).map(z => z.toFixed(3)).join(', ')}]` 
+  })
+  self.postMessage({ 
+    type: "debug", 
+    message: `🔍 Spread Debug: First 5 Z_B: [${zScoresB.slice(lookbackWindow-1, lookbackWindow+4).map(z => z.toFixed(3)).join(', ')}]` 
+  })
+  self.postMessage({ 
+    type: "debug", 
+    message: `🔍 Spread Debug: First 5 spreads: [${spreads.slice(lookbackWindow-1, lookbackWindow+4).map(s => s.toFixed(3)).join(', ')}]` 
+  })
+  
+  // Step 3: Calculate Z-score of the spread (final trading signal)
+  const spreadZScores = []
+  
+  for (let i = 0; i < spreads.length; i++) {
+    if (i < lookbackWindow - 1) {
+      // Not enough data for rolling calculation
+      spreadZScores.push(0)
+      continue
+    }
+    
+    // Get rolling window of spreads
+    const windowStart = Math.max(0, i - lookbackWindow + 1)
+    const windowSpreads = spreads.slice(windowStart, i + 1)
+    
+    // Calculate rolling mean of spreads
+    const rollingMeanSpread = windowSpreads.reduce((sum, spread) => sum + spread, 0) / windowSpreads.length
+    
+    // Calculate rolling standard deviation of spreads (use population std dev to avoid division by zero)
+    const spreadVariance = windowSpreads.reduce((sum, spread) => sum + Math.pow(spread - rollingMeanSpread, 2), 0) / windowSpreads.length
+    const rollingStdDevSpread = Math.sqrt(spreadVariance)
+    
+    // Calculate Z-score of current spread (this is our trading signal!)
+    const currentSpread = spreads[i]
+    const spreadZScore = rollingStdDevSpread > 0 ? (currentSpread - rollingMeanSpread) / rollingStdDevSpread : 0
+    
+    // Debug first few spread Z-score calculations
+    if (i < lookbackWindow + 3) {
+      self.postMessage({ 
+        type: "debug", 
+        message: `🎯 SpreadZ[${i}]: spread=${currentSpread.toFixed(4)}, meanSpr=${rollingMeanSpread.toFixed(4)}, stdSpr=${rollingStdDevSpread.toFixed(4)}, zSpr=${spreadZScore.toFixed(4)}` 
+      })
+    }
+    
+    spreadZScores.push(spreadZScore)
+  }
+  
+  self.postMessage({ 
+    type: "debug", 
+    message: `✅ Gemini Model Complete: Generated ${spreadZScores.length} spread Z-scores. Range: [${Math.min(...spreadZScores.filter(z => !isNaN(z))).toFixed(3)}, ${Math.max(...spreadZScores.filter(z => !isNaN(z))).toFixed(3)}]` 
+  })
+  
+  return {
+    individualZScoresA: zScoresA,
+    individualZScoresB: zScoresB,
+    spreads: spreads,
+    spreadZScores: spreadZScores
+  }
+}
+
 // KALMAN FILTER DEBUG VERSION - Updated at 2024-12-23 15:45:00
-console.log("🚀 KALMAN DEBUG WORKER LOADED - Version 2024-12-23 15:45:00 - MEASUREMENT NOISE FIX")
+console.log("🚀 ENHANCED WORKER LOADED - Version 2024-12-23 17:30:00 - GEMINI MODEL + TOFIXED FIXES")
 
 // Main message handler for the worker
 self.onmessage = async (event) => {
@@ -860,20 +997,45 @@ self.onmessage = async (event) => {
           )
         }
       } else if (modelType === "euclidean") {
-        const initialPriceA = pricesA[0].close
-        const initialPriceB = pricesB[0].close
-        const normalizedPricesA = stockAPrices.map((p) => p / initialPriceA)
-        const normalizedPricesB = stockBPrices.map((p) => p / initialPriceB)
-        distances = normalizedPricesA.map((normA, i) => Math.abs(normA - normalizedPricesB[i]))
-        zScores = calculateZScore(distances, euclideanLookbackWindow)
-        rollingHalfLifes = calculateRollingHalfLife(distances, euclideanLookbackWindow)
-        if (distances.length > 0) {
-          meanValue = distances.reduce((sum, val) => sum + val, 0) / distances.length
-          const stdDevDenominator = distances.length > 1 ? distances.length - 1 : distances.length
+        // *** GEMINI'S Z-SCORE BASED EUCLIDEAN MODEL ***
+        self.postMessage({ type: "debug", message: "🧬 Using Gemini's Z-Score Based Euclidean Model" })
+        
+        const geminiResults = calculateGeminiEuclideanModel(stockAPrices, stockBPrices, euclideanLookbackWindow)
+        
+        // Extract results from Gemini model
+        const individualZScoresA = geminiResults.individualZScoresA
+        const individualZScoresB = geminiResults.individualZScoresB
+        spreads = geminiResults.spreads  // This is Z_A - Z_B
+        zScores = geminiResults.spreadZScores  // This is the Z-score of the spread (our trading signal!)
+        
+        // Store individual Z-scores in distances array for compatibility with existing code
+        distances = spreads  // Use spreads instead of old distance calculation
+        
+        // Calculate rolling half-lives using the spreads
+        rollingHalfLifes = calculateRollingHalfLife(spreads, euclideanLookbackWindow)
+        
+        // Calculate statistics for the spreads (Z_A - Z_B)
+        if (spreads.length > 0) {
+          meanValue = spreads.reduce((sum, val) => sum + val, 0) / spreads.length
+          const stdDevDenominator = spreads.length > 1 ? spreads.length - 1 : spreads.length
           stdDevValue = Math.sqrt(
-            distances.reduce((sum, val) => sum + Math.pow(val - meanValue, 2), 0) / stdDevDenominator,
+            spreads.reduce((sum, val) => sum + Math.pow(val - meanValue, 2), 0) / stdDevDenominator,
           )
         }
+        
+        // Store individual Z-scores for table display
+        alphas = individualZScoresA  // Reusing alphas array to store individual Z-scores for Stock A
+        hedgeRatios = individualZScoresB  // Reusing hedgeRatios array to store individual Z-scores for Stock B
+        
+        self.postMessage({ 
+          type: "debug", 
+          message: `📊 Gemini Results: Mean spread=${meanValue.toFixed(6)}, StdDev=${stdDevValue.toFixed(6)}, Signal range=[${Math.min(...zScores.filter(z => !isNaN(z))).toFixed(3)}, ${Math.max(...zScores.filter(z => !isNaN(z))).toFixed(3)}]` 
+        })
+        
+        self.postMessage({ 
+          type: "debug", 
+          message: `🔍 Data Check: spreads.length=${spreads.length}, alphas.length=${alphas.length}, hedgeRatios.length=${hedgeRatios.length}, zScores.length=${zScores.length}` 
+        })
       }
 
       const validZScores = zScores.filter((z) => !isNaN(z))
@@ -883,15 +1045,15 @@ self.onmessage = async (event) => {
       const correlation = calculateCorrelation(pricesA.slice(0, minLength), pricesB.slice(0, minLength))
       
       // *** KEY CHANGE: Use Enhanced WASM ADF Test ***
-      const seriesForADF = modelType === "ratio" ? ratios : modelType === "euclidean" ? distances : spreads
-      const seriesTypeForADF = modelType === "ratio" ? "ratios" : modelType === "euclidean" ? "distances" : "spreads"
+      const seriesForADF = modelType === "ratio" ? ratios : modelType === "euclidean" ? spreads : spreads
+      const seriesTypeForADF = modelType === "ratio" ? "ratios" : modelType === "euclidean" ? "spreads" : "spreads"
       const adfResults = await adfTestWasmEnhanced(seriesForADF, seriesTypeForADF, modelType)
       
       const halfLifeResult = calculateHalfLife(
-        modelType === "ratio" ? ratios : modelType === "euclidean" ? distances : spreads,
+        modelType === "ratio" ? ratios : modelType === "euclidean" ? spreads : spreads,
       )
       const hurstExponent = calculateHurstExponent(
-        modelType === "ratio" ? ratios : modelType === "euclidean" ? distances : spreads,
+        modelType === "ratio" ? ratios : modelType === "euclidean" ? spreads : spreads,
       )
       const practicalTradeHalfLife = calculatePracticalTradeHalfLife(zScores, entryThreshold, exitThreshold)
 
@@ -911,9 +1073,11 @@ self.onmessage = async (event) => {
           row.hedgeRatio = hedgeRatios[i]
           row.spread = spreads[i]
         } else if (modelType === "euclidean") {
-          row.normalizedA = stockAPrices[i] / pricesA[0].close
-          row.normalizedB = stockBPrices[i] / pricesB[0].close
-          row.distance = distances[i]
+          // Show Gemini model values: individual Z-scores, spread, and spread Z-score
+          row.zScoreA = alphas[i]  // Individual Z-score for Stock A
+          row.zScoreB = hedgeRatios[i]  // Individual Z-score for Stock B
+          row.spread = spreads[i]  // Z_A - Z_B
+          row.spreadZScore = zScores[i]  // Z-score of the spread (our trading signal)
         }
         tableData.push(row)
       }
@@ -924,7 +1088,7 @@ self.onmessage = async (event) => {
       const rollingUpperBand2 = []
       const rollingLowerBand2 = []
 
-      const dataForBands = modelType === "ratio" ? ratios : modelType === "euclidean" ? distances : spreads
+      const dataForBands = modelType === "ratio" ? ratios : modelType === "euclidean" ? spreads : spreads
       const rollingStatsWindow =
         modelType === "ratio"
           ? ratioLookbackWindow
@@ -961,8 +1125,8 @@ self.onmessage = async (event) => {
           stdDevRatio: modelType === "ratio" ? stdDevValue : undefined,
           meanSpread: modelType === "ols" || modelType === "kalman" ? meanValue : undefined,
           stdDevSpread: modelType === "ols" || modelType === "kalman" ? stdDevValue : undefined,
-          meanDistance: modelType === "euclidean" ? meanValue : undefined,
-          stdDevDistance: modelType === "euclidean" ? stdDevValue : undefined,
+          meanEuclideanSpread: modelType === "euclidean" ? meanValue : undefined,
+          stdDevEuclideanSpread: modelType === "euclidean" ? stdDevValue : undefined,
           minZScore,
           maxZScore,
           adfResults,
