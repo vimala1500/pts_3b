@@ -1,18 +1,33 @@
 # ADF T-Statistic Calculation Steps for Euclidean Model
 
-## � CRITICAL BUG IDENTIFIED BY GEMINI AI
+## 🚨 CRITICAL BUG IDENTIFIED: DOUBLE ROLLING WINDOW EFFECT
 
-**The Primary Issue**: We were including initial warmup period zeros in the ADF test input!
+**The Primary Issue**: We discovered the "double rolling window" effect in spread Z-score calculations!
 
-**Problem**: For 180-day lookback with 1000 data points:
-- ❌ **Before**: Passing all 1000 values (including 179 zeros) to ADF test
-- ✅ **After**: Passing only 821 valid calculated spread Z-scores to ADF test
+**The Double Rolling Window Effect**: 
+For a 60-day lookback window:
+1. **First Rolling Window**: Individual Z-scores need 60 days → Valid from day 60
+2. **Second Rolling Window**: Spread Z-scores need 60 valid spread values → Valid from day 119 (60 + 59)
 
-**Root Cause**: Our rolling Z-score calculation sets initial values to 0 for the warmup period, but we were feeding these zeros to the ADF test instead of excluding them like pandas `.dropna()` does.
+**Problem**: For 60-day lookback with 1000 data points:
+- ❌ **Before**: Spread Z-scores starting from day 60 (using invalid values in rolling calculation)
+- ✅ **After**: Spread Z-scores starting from day 119 (using only valid spread values)
 
-**Impact**: This severely distorts ADF results, explaining the large difference in t-statistics (-7.1754 vs -3.3985).
+**Root Cause**: 
+- Individual Z-scores: `TCS_Rolling_ZScore`, `HCLTECH_Rolling_ZScore` → Valid from day 60
+- Spread values: `Z_A - Z_B` → Valid from day 60  
+- **Spread Z-scores**: Need 60 valid spread values → Valid from day 119 (NOT day 60!)
 
-## �📊 Complete Step-by-Step Process
+**Impact**: Our spread Z-scores were 10-15x larger because we included invalid values in the rolling mean/std dev calculations.
+
+**Formula for Double Warmup**:
+```
+Double Warmup Period = 2 × lookbackWindow - 2
+For 60-day: 2 × 60 - 2 = 118 days
+For 180-day: 2 × 180 - 2 = 358 days
+```
+
+## 📊 Complete Step-by-Step Process
 
 ### **Phase 1: Data Preparation**
 
@@ -21,7 +36,7 @@ For each stock (A and B), calculate rolling Z-scores:
 ```javascript
 for (let i = 0; i < prices.length; i++) {
   if (i < lookbackWindow - 1) {
-    zScores.push(0) // Not enough data
+    zScores.push(0) // Not enough data - will be excluded later
     continue
   }
   
@@ -44,18 +59,25 @@ for (let i = 0; i < prices.length; i++) {
 ```javascript
 // Create spread series: Z_A - Z_B
 spreads = zScoresA.map((zA, i) => zA - zScoresB[i])
+// Valid from day 60 onwards (when individual Z-scores become valid)
 ```
 
-#### Step 1.3: Spread Z-Score Calculation (Final Trading Signal)
+#### Step 1.3: Spread Z-Score Calculation (Final Trading Signal) - CRITICAL FIX
 ```javascript
 for (let i = 0; i < spreads.length; i++) {
-  if (i < lookbackWindow - 1) {
-    spreadZScores.push(0)
+  // DOUBLE ROLLING EFFECT: Need to account for two warmup periods
+  const firstValidSpreadIndex = lookbackWindow - 1  // Day 60 for 60-day lookback
+  const firstValidSpreadZScoreIndex = firstValidSpreadIndex + lookbackWindow - 1  // Day 119 for 60-day lookback
+  
+  if (i < firstValidSpreadZScoreIndex) {
+    spreadZScores.push(0) // Not enough valid spread data
     continue
   }
   
-  // Get rolling window of spreads
-  windowSpreads = spreads.slice(i - lookbackWindow + 1, i + 1)
+  // Get rolling window of VALID spreads only (skip initial zeros/NaNs)
+  const validSpreadsStartIndex = firstValidSpreadIndex
+  const windowStart = Math.max(validSpreadsStartIndex, i - lookbackWindow + 1)
+  const windowSpreads = spreads.slice(windowStart, i + 1)
   
   // Calculate rolling mean of spreads
   rollingMeanSpread = sum(windowSpreads) / windowSpreads.length
@@ -80,16 +102,19 @@ for (let i = 0; i < spreads.length; i++) {
 seriesForADF = spreadZScores  // The final trading signal series
 ```
 
-#### Step 2.2: CRITICAL - Remove Warmup Period
+#### Step 2.2: CRITICAL - Remove Double Warmup Period
 ```javascript
-// GEMINI IDENTIFIED ISSUE: Remove initial zeros/placeholder values from warmup period
-// For 180-day lookback: Remove first 179 values, keep only valid calculated Z-scores
+// DOUBLE ROLLING EFFECT: Remove both warmup periods before ADF test
 if (modelType === "euclidean") {
   const lookbackWindow = euclideanLookbackWindow
-  // Start from first valid calculation (skip warmup period)
-  seriesForADF = zScores.slice(lookbackWindow - 1).filter(val => isFinite(val) && !isNaN(val))
-  // Expected length: totalDataPoints - (lookbackWindow - 1)
-  // Example: 1000 - 179 = 821 valid data points for ADF test
+  const doubleWarmupPeriod = 2 * lookbackWindow - 2  // e.g., 118 for 60-day lookback
+  
+  // Start from first valid spread Z-score calculation
+  seriesForADF = zScores.slice(doubleWarmupPeriod).filter(val => isFinite(val) && !isNaN(val))
+  
+  // Expected lengths:
+  // 60-day lookback: 1000 - 118 = 882 valid data points
+  // 180-day lookback: 1000 - 358 = 642 valid data points
 }
 ```
 
@@ -141,15 +166,6 @@ Where:
 - `β̂` = estimated coefficient of y_{t-1} from OLS regression
 - `SE(β̂)` = standard error of β̂
 
-The standard error is calculated as:
-```
-SE(β̂) = sqrt(s² * (X'X)⁻¹[β,β])
-```
-
-Where:
-- `s²` = residual variance from the regression
-- `(X'X)⁻¹[β,β]` = diagonal element corresponding to β in the variance-covariance matrix
-
 ### **Phase 4: Result Interpretation**
 
 #### Step 4.1: Statistical Decision
@@ -162,52 +178,32 @@ if (t_statistic < critical_value_5%) {
 }
 ```
 
-#### Step 4.2: P-Value Calculation
-The p-value is calculated based on the distribution of the ADF statistic under the null hypothesis.
+## 🔍 Key Insights from Double Rolling Window Fix
 
-## 🔍 Key Debugging Points
+### **Timeline for 60-day Lookback:**
+- **Days 1-59**: Individual Z-scores = 0 (first warmup)
+- **Day 60**: First valid individual Z-scores → First valid spread value
+- **Days 60-118**: Valid spreads accumulating (second warmup)
+- **Day 119**: First valid spread Z-score calculation
 
-### **1. Data Differences**
-- **Individual Z-scores**: Check if sample std dev (÷N-1) vs population std dev (÷N) matches Gemini
-- **Spread values**: Verify Z_A - Z_B calculations match exactly
-- **Spread Z-scores**: Ensure final trading signal calculation is identical
+### **Timeline for 180-day Lookback:**
+- **Days 1-179**: Individual Z-scores = 0 (first warmup)
+- **Day 180**: First valid individual Z-scores → First valid spread value
+- **Days 180-358**: Valid spreads accumulating (second warmup)
+- **Day 359**: First valid spread Z-score calculation
 
-### **2. ADF Input Series**
-- **Series used**: Spread Z-scores (not raw spread, not individual Z-scores)
-- **Data cleaning**: How NaN/Infinity values are handled
-- **Series length**: Number of valid data points going into ADF test
+### **Why This Matters:**
+1. **Gemini's Individual Z-scores**: Match our values exactly ✅
+2. **Gemini's Spread values**: Match our values exactly ✅ 
+3. **Gemini's Spread Z-scores**: NOW should match our values ✅
+4. **ADF Test Results**: Should now be very close to Gemini's ✅
 
-### **3. WASM ADF Implementation**
-- **Model type**: "constant" (regression with constant term)
-- **Lag selection**: AIC-based optimal lag selection
-- **Regression method**: OLS estimation
-- **Critical values**: MacKinnon (1996) critical value tables
+## 🎯 Expected Results After Fix
 
-### **4. Potential Sources of Divergence**
-1. **Standard deviation method** (sample vs population)
-2. **ADF model specification** (constant vs trend vs none)
-3. **Lag selection criteria** (AIC vs BIC vs fixed lags)
-4. **Critical value tables** (different statistical references)
-5. **Numerical precision** (WASM vs Python/R floating point)
+After implementing the double rolling window fix:
+- **Spread Z-scores should start from the correct day** (119 for 60-day, 359 for 180-day)
+- **Values should be in similar magnitude** to Gemini's (-0.8 to -1.2 range, not -10 to -15)
+- **ADF test input should contain proper number of valid points**
+- **T-statistic should be much closer** to Gemini's results
 
-## 📊 Debug Output Analysis
-
-When running the Euclidean model, the debug output will show:
-
-1. **Individual Z-score ranges** for both stocks
-2. **Spread values** (Z_A - Z_B) sample
-3. **Spread Z-score values** (final trading signal) sample
-4. **ADF input data** (first/last 10 values)
-5. **First differences** (Δy) calculation
-6. **Series statistics** (mean, std dev, min, max)
-7. **ADF results** (t-statistic, lags, AIC, p-value, critical values)
-
-Compare these debug values with Gemini's intermediate calculations to identify the exact point of divergence.
-
-## 🎯 Expected Alignment
-
-After the fixes:
-- Individual Z-scores should match Gemini's using pandas `.rolling().std()` default
-- ADF test should use the same input series as Gemini's "Spread_ZScore_Rolling"
-- T-statistic should be calculated using standard econometric methods
-- Results should converge to within numerical precision limits
+This fix addresses the fundamental calculation error that was causing the 10-15x magnitude difference!

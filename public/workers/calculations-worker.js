@@ -906,15 +906,34 @@ const calculateGeminiEuclideanModel = (stockAPrices, stockBPrices, lookbackWindo
   const spreadZScores = []
   
   for (let i = 0; i < spreads.length; i++) {
-    if (i < lookbackWindow - 1) {
-      // Not enough data for rolling calculation
+    // CRITICAL FIX: Need double lookback window for spread Z-scores
+    // First lookback for individual Z-scores, second lookback for spread Z-scores
+    const requiredValidSpreads = lookbackWindow
+    const firstValidSpreadIndex = lookbackWindow - 1  // When spreads start being valid
+    const firstValidSpreadZScoreIndex = firstValidSpreadIndex + lookbackWindow - 1  // When we have enough valid spreads
+    
+    if (i < firstValidSpreadZScoreIndex) {
+      // Not enough VALID spread data for rolling calculation
       spreadZScores.push(0)
       continue
     }
     
-    // Get rolling window of spreads
-    const windowStart = Math.max(0, i - lookbackWindow + 1)
+    // Get rolling window of VALID spreads only (skip the initial zeros/NaNs)
+    const validSpreadsStartIndex = firstValidSpreadIndex  // Index 59 for 60-day lookback
+    const windowStart = Math.max(validSpreadsStartIndex, i - lookbackWindow + 1)
     const windowSpreads = spreads.slice(windowStart, i + 1)
+    
+    // Debug the double rolling effect
+    if (i === firstValidSpreadZScoreIndex) {
+      self.postMessage({ 
+        type: "debug", 
+        message: `🚨 DOUBLE ROLLING FIX: First valid spread Z-score at index ${i} (day ${i + 1}). lookbackWindow=${lookbackWindow}, firstValidSpread=${firstValidSpreadIndex}, windowStart=${windowStart}` 
+      })
+      self.postMessage({ 
+        type: "debug", 
+        message: `   Using spread window [${windowStart}:${i}], length=${windowSpreads.length}, values=[${windowSpreads.map(s => s.toFixed(6)).join(', ')}]` 
+      })
+    }
     
     // Calculate rolling mean of spreads
     const rollingMeanSpread = windowSpreads.reduce((sum, spread) => sum + spread, 0) / windowSpreads.length
@@ -941,15 +960,15 @@ const calculateGeminiEuclideanModel = (stockAPrices, stockBPrices, lookbackWindo
     const spreadZScore = rollingStdDevSpread > 0 ? (currentSpread - rollingMeanSpread) / rollingStdDevSpread : 0
     
     // Debug first few spread Z-score calculations with MORE detail
-    if (i >= lookbackWindow - 1 && i < lookbackWindow + 5) {
+    if (i >= firstValidSpreadZScoreIndex && i < firstValidSpreadZScoreIndex + 5) {
       self.postMessage({ 
         type: "debug", 
-        message: `🎯 SpreadZ[${i}]: spread=${currentSpread.toFixed(6)}, meanSpr=${rollingMeanSpread.toFixed(6)}, stdSpr=${rollingStdDevSpread.toFixed(6)}, zSpr=${spreadZScore.toFixed(6)} | window length=${windowSpreads.length}` 
+        message: `🎯 SpreadZ[${i}] (Day ${i + 1}): spread=${currentSpread.toFixed(6)}, meanSpr=${rollingMeanSpread.toFixed(6)}, stdSpr=${rollingStdDevSpread.toFixed(6)}, zSpr=${spreadZScore.toFixed(6)} | window length=${windowSpreads.length}` 
       })
-      if (i === lookbackWindow - 1) {
+      if (i === firstValidSpreadZScoreIndex) {
         self.postMessage({ 
           type: "debug", 
-          message: `   📊 First spread calculation window [${i - lookbackWindow + 1} to ${i}]: [${windowSpreads.map(s => s.toFixed(6)).join(', ')}]` 
+          message: `   📊 FIRST VALID spread Z-score calculation window [${windowStart} to ${i}]: [${windowSpreads.map(s => s.toFixed(6)).join(', ')}]` 
         })
       }
     }
@@ -970,8 +989,8 @@ const calculateGeminiEuclideanModel = (stockAPrices, stockBPrices, lookbackWindo
   }
 }
 
-// KALMAN FILTER DEBUG VERSION - Updated at 2024-12-23 20:00:00
-console.log("🚀 ENHANCED WORKER LOADED - Version 2024-12-23 20:00:00 - EXTREME DEBUG: TRACING CALCULATION DIFFERENCES")
+// KALMAN FILTER DEBUG VERSION - Updated at 2024-12-23 20:30:00
+console.log("🚀 ENHANCED WORKER LOADED - Version 2024-12-23 20:30:00 - DOUBLE ROLLING WINDOW FIX: SPREAD Z-SCORES NOW PROPERLY CALCULATED")
 
 // Main message handler for the worker
 self.onmessage = async (event) => {
@@ -1125,21 +1144,30 @@ self.onmessage = async (event) => {
       let seriesForADF = modelType === "ratio" ? ratios : modelType === "euclidean" ? zScores : spreads
       const seriesTypeForADF = modelType === "ratio" ? "ratios" : modelType === "euclidean" ? "spread_z_scores" : "spreads"
       
-      // CRITICAL FIX: For euclidean model, remove the initial zeros/warmup period before ADF test
+      // CRITICAL FIX: For euclidean model, remove the DOUBLE warmup period before ADF test
       // This matches Gemini's approach of using .dropna() to exclude NaN values
       if (modelType === "euclidean") {
         const lookbackWindow = euclideanLookbackWindow
-        // Remove the first (lookbackWindow - 1) placeholder values and only include valid calculated spread Z-scores
-        // Start from the first valid calculated value (at index lookbackWindow - 1)
-        seriesForADF = zScores.slice(lookbackWindow - 1).filter(val => isFinite(val) && !isNaN(val))
+        // DOUBLE ROLLING EFFECT: Need to remove (2 * lookbackWindow - 2) initial values
+        // First warmup: individual Z-scores need (lookbackWindow - 1) values
+        // Second warmup: spread Z-scores need another (lookbackWindow - 1) valid spread values
+        const doubleWarmupPeriod = 2 * lookbackWindow - 2  // e.g., 2*60-2 = 118 for 60-day lookback
+        const firstValidSpreadZScoreIndex = doubleWarmupPeriod  // Index 118 for 60-day lookback (day 119)
+        
+        // Start from the first valid spread Z-score calculation
+        seriesForADF = zScores.slice(firstValidSpreadZScoreIndex).filter(val => isFinite(val) && !isNaN(val))
         
         self.postMessage({ 
           type: "debug", 
-          message: `🚨 CRITICAL FIX: Removed warmup period! Original length: ${zScores.length}, Warmup removed: ${lookbackWindow - 1}, Valid ADF series length: ${seriesForADF.length}` 
+          message: `🚨 DOUBLE ROLLING FIX FOR ADF: Original length: ${zScores.length}, Double warmup removed: ${doubleWarmupPeriod}, Valid ADF series length: ${seriesForADF.length}` 
         })
         self.postMessage({ 
           type: "debug", 
-          message: `🚨 Expected valid length should be: ${zScores.length - (lookbackWindow - 1)} (1000 - 179 = 821 for 180-day lookback)` 
+          message: `🚨 Expected valid length should be: ${zScores.length - doubleWarmupPeriod} (1000 - 118 = 882 for 60-day lookback, 1000 - 358 = 642 for 180-day lookback)` 
+        })
+        self.postMessage({ 
+          type: "debug", 
+          message: `🚨 First valid spread Z-score should appear at day ${doubleWarmupPeriod + 1} (index ${doubleWarmupPeriod})` 
         })
       }
       
