@@ -916,8 +916,8 @@ const calculateGeminiEuclideanModel = (stockAPrices, stockBPrices, lookbackWindo
   }
 }
 
-// KALMAN FILTER DEBUG VERSION - Updated at 2024-12-23 19:00:00
-console.log("🚀 ENHANCED WORKER LOADED - Version 2024-12-23 19:00:00 - ADF DEBUG: DETAILED LOGGING + STANDARD MODEL TYPES")
+// KALMAN FILTER DEBUG VERSION - Updated at 2024-12-23 19:30:00
+console.log("🚀 ENHANCED WORKER LOADED - Version 2024-12-23 19:30:00 - CRITICAL FIX: REMOVED WARMUP ZEROS FROM ADF TEST")
 
 // Main message handler for the worker
 self.onmessage = async (event) => {
@@ -1068,8 +1068,26 @@ self.onmessage = async (event) => {
       
       // *** KEY CHANGE: Use Enhanced WASM ADF Test ***
       // For euclidean model, use Z-score of the spread (spreadZScores) not raw spread, to match Gemini's approach
-      const seriesForADF = modelType === "ratio" ? ratios : modelType === "euclidean" ? zScores : spreads
+      let seriesForADF = modelType === "ratio" ? ratios : modelType === "euclidean" ? zScores : spreads
       const seriesTypeForADF = modelType === "ratio" ? "ratios" : modelType === "euclidean" ? "spread_z_scores" : "spreads"
+      
+      // CRITICAL FIX: For euclidean model, remove the initial zeros/warmup period before ADF test
+      // This matches Gemini's approach of using .dropna() to exclude NaN values
+      if (modelType === "euclidean") {
+        const lookbackWindow = euclideanLookbackWindow
+        // Remove the first (lookbackWindow - 1) placeholder values and only include valid calculated spread Z-scores
+        // Start from the first valid calculated value (at index lookbackWindow - 1)
+        seriesForADF = zScores.slice(lookbackWindow - 1).filter(val => isFinite(val) && !isNaN(val))
+        
+        self.postMessage({ 
+          type: "debug", 
+          message: `🚨 CRITICAL FIX: Removed warmup period! Original length: ${zScores.length}, Warmup removed: ${lookbackWindow - 1}, Valid ADF series length: ${seriesForADF.length}` 
+        })
+        self.postMessage({ 
+          type: "debug", 
+          message: `🚨 Expected valid length should be: ${zScores.length - (lookbackWindow - 1)} (1000 - 179 = 821 for 180-day lookback)` 
+        })
+      }
       
       // Convert model type to standard ADF model specification
       // The WASM function likely expects standard econometric model types, not our custom model names
@@ -1078,42 +1096,41 @@ self.onmessage = async (event) => {
       if (modelType === "euclidean") {
         self.postMessage({ 
           type: "debug", 
-          message: `🔬 ADF Test Input: Using Z-score of spread (spreadZScores) for euclidean model, not raw spread. Series length: ${seriesForADF.length}, ADF model type: '${adfModelType}'` 
+          message: `🔬 ADF Test Input: Using VALID spread Z-scores (warmup period removed) for euclidean model. Series length: ${seriesForADF.length}, ADF model type: '${adfModelType}'` 
         })
         
         // Log detailed ADF input for debugging
-        const validADFData = seriesForADF.filter(val => isFinite(val) && !isNaN(val))
-        const firstFew = validADFData.slice(0, 10)
-        const lastFew = validADFData.slice(-10)
+        const firstFew = seriesForADF.slice(0, 10)
+        const lastFew = seriesForADF.slice(-10)
         
         self.postMessage({ 
           type: "debug", 
-          message: `📊 ADF Input Data: Valid points: ${validADFData.length}, First 10: [${firstFew.map(v => v.toFixed(6)).join(', ')}]` 
+          message: `📊 ADF Input Data (VALID ONLY): Valid points: ${seriesForADF.length}, First 10: [${firstFew.map(v => v.toFixed(6)).join(', ')}]` 
         })
         self.postMessage({ 
           type: "debug", 
-          message: `📊 ADF Input Data: Last 10: [${lastFew.map(v => v.toFixed(6)).join(', ')}]` 
+          message: `📊 ADF Input Data (VALID ONLY): Last 10: [${lastFew.map(v => v.toFixed(6)).join(', ')}]` 
         })
         
         // Calculate and log first differences for manual verification
         const firstDifferences = []
-        for (let i = 1; i < validADFData.length; i++) {
-          firstDifferences.push(validADFData[i] - validADFData[i-1])
+        for (let i = 1; i < seriesForADF.length; i++) {
+          firstDifferences.push(seriesForADF[i] - seriesForADF[i-1])
         }
         const firstDiffSample = firstDifferences.slice(0, 10)
         self.postMessage({ 
           type: "debug", 
-          message: `📊 First Differences (Δy): First 10: [${firstDiffSample.map(v => v.toFixed(6)).join(', ')}]` 
+          message: `📊 First Differences (Δy) VALID ONLY: First 10: [${firstDiffSample.map(v => v.toFixed(6)).join(', ')}]` 
         })
         
-        // Log basic statistics of the series
-        const mean = validADFData.reduce((sum, val) => sum + val, 0) / validADFData.length
-        const variance = validADFData.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / validADFData.length
+        // Log basic statistics of the VALID series only
+        const mean = seriesForADF.reduce((sum, val) => sum + val, 0) / seriesForADF.length
+        const variance = seriesForADF.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / seriesForADF.length
         const stdDev = Math.sqrt(variance)
         
         self.postMessage({ 
           type: "debug", 
-          message: `📊 ADF Series Stats: Mean=${mean.toFixed(6)}, StdDev=${stdDev.toFixed(6)}, Min=${Math.min(...validADFData).toFixed(6)}, Max=${Math.max(...validADFData).toFixed(6)}` 
+          message: `📊 ADF Series Stats (VALID ONLY): Mean=${mean.toFixed(6)}, StdDev=${stdDev.toFixed(6)}, Min=${Math.min(...seriesForADF).toFixed(6)}, Max=${Math.max(...seriesForADF).toFixed(6)}` 
         })
       }
       

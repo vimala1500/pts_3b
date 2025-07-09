@@ -1,6 +1,18 @@
 # ADF T-Statistic Calculation Steps for Euclidean Model
 
-## 📊 Complete Step-by-Step Process
+## � CRITICAL BUG IDENTIFIED BY GEMINI AI
+
+**The Primary Issue**: We were including initial warmup period zeros in the ADF test input!
+
+**Problem**: For 180-day lookback with 1000 data points:
+- ❌ **Before**: Passing all 1000 values (including 179 zeros) to ADF test
+- ✅ **After**: Passing only 821 valid calculated spread Z-scores to ADF test
+
+**Root Cause**: Our rolling Z-score calculation sets initial values to 0 for the warmup period, but we were feeding these zeros to the ADF test instead of excluding them like pandas `.dropna()` does.
+
+**Impact**: This severely distorts ADF results, explaining the large difference in t-statistics (-7.1754 vs -3.3985).
+
+## �📊 Complete Step-by-Step Process
 
 ### **Phase 1: Data Preparation**
 
@@ -68,13 +80,26 @@ for (let i = 0; i < spreads.length; i++) {
 seriesForADF = spreadZScores  // The final trading signal series
 ```
 
-#### Step 2.2: Data Cleaning
+#### Step 2.2: CRITICAL - Remove Warmup Period
 ```javascript
-// Filter out NaN and Infinity values
-cleanData = seriesForADF.filter(val => isFinite(val) && !isNaN(val))
+// GEMINI IDENTIFIED ISSUE: Remove initial zeros/placeholder values from warmup period
+// For 180-day lookback: Remove first 179 values, keep only valid calculated Z-scores
+if (modelType === "euclidean") {
+  const lookbackWindow = euclideanLookbackWindow
+  // Start from first valid calculation (skip warmup period)
+  seriesForADF = zScores.slice(lookbackWindow - 1).filter(val => isFinite(val) && !isNaN(val))
+  // Expected length: totalDataPoints - (lookbackWindow - 1)
+  // Example: 1000 - 179 = 821 valid data points for ADF test
+}
 ```
 
-#### Step 2.3: Model Type Conversion
+#### Step 2.3: Data Cleaning
+```javascript
+// The filtering above already handles NaN and Infinity values
+// Only valid, calculated spread Z-scores are passed to ADF test
+```
+
+#### Step 2.4: Model Type Conversion
 ```javascript
 // Convert from custom model type to standard econometric model type
 adfModelType = "constant"  // Standard ADF model with constant term
