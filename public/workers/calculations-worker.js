@@ -803,16 +803,33 @@ const calculateIndividualZScores = (prices, lookbackWindow) => {
       : 0
     const rollingStdDev = Math.sqrt(variance)
     
+    // VERIFY: Double-check that we're using sample std dev for first calculation
+    if (i === lookbackWindow - 1) {
+      const sumSquaredDiffs = windowPrices.reduce((sum, price) => sum + Math.pow(price - rollingMean, 2), 0)
+      const populationStd = Math.sqrt(sumSquaredDiffs / windowPrices.length)  // N
+      const sampleStd = Math.sqrt(sumSquaredDiffs / (windowPrices.length - 1))  // N-1
+      self.postMessage({ 
+        type: "debug", 
+        message: `🔍 STD DEV VERIFICATION: Population (÷${windowPrices.length})=${populationStd.toFixed(6)}, Sample (÷${windowPrices.length - 1})=${sampleStd.toFixed(6)}, Using=${rollingStdDev.toFixed(6)}` 
+      })
+    }
+    
     // Calculate Z-score for current price
     const currentPrice = prices[i]
     const zScore = rollingStdDev > 0 ? (currentPrice - rollingMean) / rollingStdDev : 0
     
-    // Debug first few calculations
-    if (i < lookbackWindow + 3) {
+    // Debug first few calculations with MORE detail
+    if (i >= lookbackWindow - 1 && i < lookbackWindow + 5) {
       self.postMessage({ 
         type: "debug", 
-        message: `🔢 Z-Score[${i}]: price=${currentPrice.toFixed(2)}, mean=${rollingMean.toFixed(2)}, std=${rollingStdDev.toFixed(4)}, z=${zScore.toFixed(4)}` 
+        message: `🔢 Z-Score[${i}]: price=${currentPrice.toFixed(2)}, mean=${rollingMean.toFixed(6)}, std=${rollingStdDev.toFixed(6)}, z=${zScore.toFixed(6)} | window length=${windowPrices.length}` 
       })
+      if (i === lookbackWindow - 1) {
+        self.postMessage({ 
+          type: "debug", 
+          message: `   📊 First calculation window [${i - lookbackWindow + 1} to ${i}]: [${windowPrices.map(p => p.toFixed(2)).join(', ')}]` 
+        })
+      }
     }
     
     zScores.push(zScore)
@@ -852,17 +869,37 @@ const calculateGeminiEuclideanModel = (stockAPrices, stockBPrices, lookbackWindo
   // Step 2: Calculate spread = Z_A - Z_B
   const spreads = zScoresA.map((zA, i) => zA - zScoresB[i])
   
+  // DETAILED DEBUG: Individual Z-scores at first valid calculation point
+  const firstValidIndex = lookbackWindow - 1
   self.postMessage({ 
     type: "debug", 
-    message: `🔍 Spread Debug: First 5 Z_A: [${zScoresA.slice(lookbackWindow-1, lookbackWindow+4).map(z => z.toFixed(3)).join(', ')}]` 
+    message: `🔍 INDIVIDUAL Z-SCORES at first valid index (${firstValidIndex}):` 
   })
   self.postMessage({ 
     type: "debug", 
-    message: `🔍 Spread Debug: First 5 Z_B: [${zScoresB.slice(lookbackWindow-1, lookbackWindow+4).map(z => z.toFixed(3)).join(', ')}]` 
+    message: `   Stock A Z-scores (first 10 valid): [${zScoresA.slice(firstValidIndex, firstValidIndex+10).map(z => z.toFixed(6)).join(', ')}]` 
   })
   self.postMessage({ 
     type: "debug", 
-    message: `🔍 Spread Debug: First 5 spreads: [${spreads.slice(lookbackWindow-1, lookbackWindow+4).map(s => s.toFixed(3)).join(', ')}]` 
+    message: `   Stock B Z-scores (first 10 valid): [${zScoresB.slice(firstValidIndex, firstValidIndex+10).map(z => z.toFixed(6)).join(', ')}]` 
+  })
+  self.postMessage({ 
+    type: "debug", 
+    message: `   Raw spreads (Z_A - Z_B, first 10): [${spreads.slice(firstValidIndex, firstValidIndex+10).map(s => s.toFixed(6)).join(', ')}]` 
+  })
+  
+  // DEBUG: Check the raw prices used for first few calculations
+  self.postMessage({ 
+    type: "debug", 
+    message: `🔍 RAW PRICES at first valid calculation:` 
+  })
+  self.postMessage({ 
+    type: "debug", 
+    message: `   Stock A prices [${firstValidIndex-4} to ${firstValidIndex+5}]: [${stockAPrices.slice(firstValidIndex-4, firstValidIndex+6).map(p => p.toFixed(2)).join(', ')}]` 
+  })
+  self.postMessage({ 
+    type: "debug", 
+    message: `   Stock B prices [${firstValidIndex-4} to ${firstValidIndex+5}]: [${stockBPrices.slice(firstValidIndex-4, firstValidIndex+6).map(p => p.toFixed(2)).join(', ')}]` 
   })
   
   // Step 3: Calculate Z-score of the spread (final trading signal)
@@ -887,17 +924,34 @@ const calculateGeminiEuclideanModel = (stockAPrices, stockBPrices, lookbackWindo
           ? windowSpreads.reduce((sum, spread) => sum + Math.pow(spread - rollingMeanSpread, 2), 0) / (windowSpreads.length - 1)  // N-1 for sample std dev
           : 0
         const rollingStdDevSpread = Math.sqrt(spreadVariance)
+        
+        // VERIFY: Double-check that we're using sample std dev for spread calculation too
+        if (i === lookbackWindow - 1) {
+          const sumSquaredDiffs = windowSpreads.reduce((sum, spread) => sum + Math.pow(spread - rollingMeanSpread, 2), 0)
+          const populationStd = Math.sqrt(sumSquaredDiffs / windowSpreads.length)  // N
+          const sampleStd = Math.sqrt(sumSquaredDiffs / (windowSpreads.length - 1))  // N-1
+          self.postMessage({ 
+            type: "debug", 
+            message: `🔍 SPREAD STD DEV VERIFICATION: Population (÷${windowSpreads.length})=${populationStd.toFixed(6)}, Sample (÷${windowSpreads.length - 1})=${sampleStd.toFixed(6)}, Using=${rollingStdDevSpread.toFixed(6)}` 
+          })
+        }
     
     // Calculate Z-score of current spread (this is our trading signal!)
     const currentSpread = spreads[i]
     const spreadZScore = rollingStdDevSpread > 0 ? (currentSpread - rollingMeanSpread) / rollingStdDevSpread : 0
     
-    // Debug first few spread Z-score calculations
-    if (i < lookbackWindow + 3) {
+    // Debug first few spread Z-score calculations with MORE detail
+    if (i >= lookbackWindow - 1 && i < lookbackWindow + 5) {
       self.postMessage({ 
         type: "debug", 
-        message: `🎯 SpreadZ[${i}]: spread=${currentSpread.toFixed(4)}, meanSpr=${rollingMeanSpread.toFixed(4)}, stdSpr=${rollingStdDevSpread.toFixed(4)}, zSpr=${spreadZScore.toFixed(4)}` 
+        message: `🎯 SpreadZ[${i}]: spread=${currentSpread.toFixed(6)}, meanSpr=${rollingMeanSpread.toFixed(6)}, stdSpr=${rollingStdDevSpread.toFixed(6)}, zSpr=${spreadZScore.toFixed(6)} | window length=${windowSpreads.length}` 
       })
+      if (i === lookbackWindow - 1) {
+        self.postMessage({ 
+          type: "debug", 
+          message: `   📊 First spread calculation window [${i - lookbackWindow + 1} to ${i}]: [${windowSpreads.map(s => s.toFixed(6)).join(', ')}]` 
+        })
+      }
     }
     
     spreadZScores.push(spreadZScore)
@@ -916,8 +970,8 @@ const calculateGeminiEuclideanModel = (stockAPrices, stockBPrices, lookbackWindo
   }
 }
 
-// KALMAN FILTER DEBUG VERSION - Updated at 2024-12-23 19:30:00
-console.log("🚀 ENHANCED WORKER LOADED - Version 2024-12-23 19:30:00 - CRITICAL FIX: REMOVED WARMUP ZEROS FROM ADF TEST")
+// KALMAN FILTER DEBUG VERSION - Updated at 2024-12-23 20:00:00
+console.log("🚀 ENHANCED WORKER LOADED - Version 2024-12-23 20:00:00 - EXTREME DEBUG: TRACING CALCULATION DIFFERENCES")
 
 // Main message handler for the worker
 self.onmessage = async (event) => {
