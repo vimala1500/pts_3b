@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react"
 import { openDB } from "idb"
-import calculateZScore from "../utils/calculations" // Assuming this calculates Z-score for an array
+// Z-score calculations are now done inline to match the pair analyzer Gemini model
 import { Area, AreaChart, XAxis, YAxis, CartesianGrid, ResponsiveContainer } from "recharts"
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart"
 
@@ -278,37 +278,89 @@ export default function BacktestEuclidean() {
         return
       }
 
-      // Step 2: Price Normalization
-      const initialPriceA = alignedPricesA[0].close
-      const initialPriceB = alignedPricesB[0].close
+      // Step 2: Extract raw prices
+      const stockAPrices = alignedPricesA.map(item => item.close)
+      const stockBPrices = alignedPricesB.map(item => item.close)
 
+      // Step 3: Calculate individual Z-scores for each stock (Gemini Model)
+      const calculateIndividualZScores = (prices, lookbackWindow) => {
+        const zScores = []
+        
+        for (let i = 0; i < prices.length; i++) {
+          if (i < lookbackWindow - 1) {
+            // Not enough data for rolling calculation
+            zScores.push(0)
+            continue
+          }
+          
+          // Get rolling window of prices
+          const windowStart = Math.max(0, i - lookbackWindow + 1)
+          const windowPrices = prices.slice(windowStart, i + 1)
+          
+          // Calculate rolling mean
+          const rollingMean = windowPrices.reduce((sum, price) => sum + price, 0) / windowPrices.length
+          
+          // Calculate rolling standard deviation (use population std dev to avoid division by zero)
+          const variance = windowPrices.reduce((sum, price) => sum + Math.pow(price - rollingMean, 2), 0) / windowPrices.length
+          const rollingStdDev = Math.sqrt(variance)
+          
+          // Calculate Z-score for current price
+          const currentPrice = prices[i]
+          const zScore = rollingStdDev > 0 ? (currentPrice - rollingMean) / rollingStdDev : 0
+          
+          zScores.push(zScore)
+        }
+        
+        return zScores
+      }
+
+      // Calculate individual Z-scores for both stocks
+      const zScoresA = calculateIndividualZScores(stockAPrices, lookbackPeriod)
+      const zScoresB = calculateIndividualZScores(stockBPrices, lookbackPeriod)
+
+      // Step 4: Calculate spread = Z_A - Z_B
+      const spreads = zScoresA.map((zA, i) => zA - zScoresB[i])
+
+      // Step 5: Calculate Z-score of the spread (final trading signal)
+      const zScores = []
+      
+      for (let i = 0; i < spreads.length; i++) {
+        if (i < lookbackPeriod - 1) {
+          // Not enough data for rolling calculation
+          zScores.push(0)
+          continue
+        }
+        
+        // Get rolling window of spreads
+        const windowStart = Math.max(0, i - lookbackPeriod + 1)
+        const windowSpreads = spreads.slice(windowStart, i + 1)
+        
+        // Calculate rolling mean of spreads
+        const rollingMeanSpread = windowSpreads.reduce((sum, spread) => sum + spread, 0) / windowSpreads.length
+        
+        // Calculate rolling standard deviation of spreads (use population std dev to avoid division by zero)
+        const spreadVariance = windowSpreads.reduce((sum, spread) => sum + Math.pow(spread - rollingMeanSpread, 2), 0) / windowSpreads.length
+        const rollingStdDevSpread = Math.sqrt(spreadVariance)
+        
+        // Calculate Z-score of current spread (this is our trading signal!)
+        const currentSpread = spreads[i]
+        const spreadZScore = rollingStdDevSpread > 0 ? (currentSpread - rollingMeanSpread) / rollingStdDevSpread : 0
+        
+        zScores.push(spreadZScore)
+      }
+
+      // Create data structure for display
       const normalizedData = alignedPricesA.map((item, index) => {
-        const normalizedA = item.close / initialPriceA
-        const normalizedB = alignedPricesB[index].close / initialPriceB
         return {
           date: item.date,
           stockAClose: item.close,
           stockBClose: alignedPricesB[index].close,
-          normalizedA,
-          normalizedB,
-          distance: Math.abs(normalizedA - normalizedB), // Step 3: Euclidean Distance
+          zScoreA: zScoresA[index],      // Individual Z-score for Stock A
+          zScoreB: zScoresB[index],      // Individual Z-score for Stock B
+          spread: spreads[index],        // Z_A - Z_B
+          distance: spreads[index],      // Keep for compatibility (same as spread)
         }
       })
-
-      // Step 4 & 5: Rolling Mean, Std Dev, and Z-score for Distance
-      const distances = normalizedData.map((d) => d.distance)
-      const zScores = []
-
-      for (let i = 0; i < distances.length; i++) {
-        if (i < lookbackPeriod - 1) {
-          zScores.push(0) // Not enough data for rolling Z-score
-          continue
-        }
-        const windowDistances = distances.slice(i - lookbackPeriod + 1, i + 1)
-        // calculateZScore returns an array of z-scores for the input array. We need the last one.
-        const currentZScore = calculateZScore(windowDistances).pop()
-        zScores.push(currentZScore)
-      }
 
       const tableData = normalizedData.map((item, index) => ({
         ...item,
@@ -332,11 +384,14 @@ export default function BacktestEuclidean() {
           // Entry conditions: Z-score crosses the entry threshold (divergence)
           if (Math.abs(prevZ) < entryZ && Math.abs(currZ) >= entryZ) {
             let tradeType = ""
-            if (currentRow.normalizedA > currentRow.normalizedB) {
-              // A is relatively high, B is relatively low -> Short A, Long B
+            // Trade direction based on the spread (Z_A - Z_B) and which stock has higher/lower individual Z-score
+            if (currentRow.spread > 0) {
+              // Z_A > Z_B: Stock A is more overbought/Stock B is more oversold relative to their own means
+              // Trade: Short A (overbought), Long B (oversold)
               tradeType = "SHORT_A_LONG_B"
             } else {
-              // B is relatively high, A is relatively low -> Long A, Short B
+              // Z_A < Z_B: Stock B is more overbought/Stock A is more oversold relative to their own means  
+              // Trade: Long A (oversold), Short B (overbought)
               tradeType = "LONG_A_SHORT_B"
             }
 
@@ -459,11 +514,20 @@ export default function BacktestEuclidean() {
     <div className="space-y-8">
       <div className="text-center space-y-2">
         <h1 className="text-5xl font-bold text-white">Pair Trading Backtest</h1>
-        <p className="text-xl text-gray-300">Euclidean Distance Model</p>
+        <p className="text-xl text-gray-300">Euclidean Distance Model (Z-Score Based)</p>
       </div>
 
       <div className="card">
         <h2 className="text-2xl font-bold text-white mb-6">Backtest Parameters</h2>
+        
+        <div className="mb-6 p-4 bg-navy-800/40 border border-navy-700 rounded-md">
+          <h3 className="text-lg font-semibold text-gold-400 mb-2">Z-Score Based Euclidean Model</h3>
+          <p className="text-gray-300 text-sm">
+            This model calculates individual Z-scores for each stock using rolling windows, then creates a spread (Z_A - Z_B). 
+            The final trading signal is the Z-score of this spread. Trades are entered when the spread Z-score exceeds 
+            the entry threshold and exited when it converges back below the exit threshold.
+          </p>
+        </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
           <div>
@@ -525,7 +589,7 @@ export default function BacktestEuclidean() {
               max="252"
               className="input-field"
             />
-            <p className="mt-1 text-sm text-gray-400">Window size for rolling distance Z-score</p>
+            <p className="mt-1 text-sm text-gray-400">Window size for individual Z-scores and spread Z-score calculation</p>
           </div>
           <div>
             <label className="block text-base font-medium text-gray-300 mb-2">Entry Z-score</label>
@@ -536,7 +600,7 @@ export default function BacktestEuclidean() {
               onChange={(e) => setEntryZ(Number.parseFloat(e.target.value))}
               className="input-field"
             />
-            <p className="mt-1 text-sm text-gray-400">Absolute Z-score to enter trade (divergence)</p>
+            <p className="mt-1 text-gray-400">Absolute spread Z-score to enter trade (spread divergence)</p>
           </div>
           <div>
             <label className="block text-base font-medium text-gray-300 mb-2">Exit Z-score</label>
@@ -547,7 +611,7 @@ export default function BacktestEuclidean() {
               onChange={(e) => setExitZ(Number.parseFloat(e.target.value))}
               className="input-field"
             />
-            <p className="mt-1 text-sm text-gray-400">Absolute Z-score to exit trade (convergence)</p>
+            <p className="mt-1 text-gray-400">Absolute spread Z-score to exit trade (spread convergence)</p>
           </div>
           <div>
             <label className="block text-base font-medium text-gray-300 mb-2">Capital Per Trade ($)</label>
@@ -661,10 +725,10 @@ export default function BacktestEuclidean() {
                     <th className="table-header">Date</th>
                     <th className="table-header">{selectedPair.stockA} Close</th>
                     <th className="table-header">{selectedPair.stockB} Close</th>
-                    <th className="table-header">Normalized {selectedPair.stockA}</th>
-                    <th className="table-header">Normalized {selectedPair.stockB}</th>
-                    <th className="table-header">Distance</th>
-                    <th className="table-header">Z-score</th>
+                    <th className="table-header">Z-Score {selectedPair.stockA}</th>
+                    <th className="table-header">Z-Score {selectedPair.stockB}</th>
+                    <th className="table-header">Spread (Z_A - Z_B)</th>
+                    <th className="table-header">Spread Z-Score</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-navy-800">
@@ -673,9 +737,9 @@ export default function BacktestEuclidean() {
                       <td className="table-cell">{row.date}</td>
                       <td className="table-cell">{row.stockAClose.toFixed(2)}</td>
                       <td className="table-cell">{row.stockBClose.toFixed(2)}</td>
-                      <td className="table-cell">{row.normalizedA.toFixed(4)}</td>
-                      <td className="table-cell">{row.normalizedB.toFixed(4)}</td>
-                      <td className="table-cell">{row.distance.toFixed(4)}</td>
+                      <td className="table-cell">{row.zScoreA.toFixed(4)}</td>
+                      <td className="table-cell">{row.zScoreB.toFixed(4)}</td>
+                      <td className="table-cell">{row.spread.toFixed(4)}</td>
                       <td
                         className={`table-cell font-medium ${
                           row.zScore > entryZ || row.zScore < -entryZ
