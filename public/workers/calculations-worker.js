@@ -785,8 +785,10 @@ const calculateIndividualZScores = (prices, lookbackWindow) => {
     // Calculate rolling mean
     const rollingMean = windowPrices.reduce((sum, price) => sum + price, 0) / windowPrices.length
     
-    // Calculate rolling standard deviation (use population std dev to avoid division by zero)
-    const variance = windowPrices.reduce((sum, price) => sum + Math.pow(price - rollingMean, 2), 0) / windowPrices.length
+    // Calculate rolling standard deviation (use SAMPLE std dev to match pandas default)
+    const variance = windowPrices.length > 1 
+      ? windowPrices.reduce((sum, price) => sum + Math.pow(price - rollingMean, 2), 0) / (windowPrices.length - 1)  // N-1 for sample std dev
+      : 0
     const rollingStdDev = Math.sqrt(variance)
     
     // Calculate Z-score for current price
@@ -814,15 +816,21 @@ const calculateIndividualZScores = (prices, lookbackWindow) => {
 
 /**
  * Calculate Gemini's Z-Score Based Euclidean Model
+ * 
+ * IMPORTANT CHANGES TO MATCH GEMINI AI IMPLEMENTATION:
+ * 1. Uses SAMPLE standard deviation (÷N-1) instead of population std dev (÷N) to match pandas default
+ * 2. ADF test is performed on Z-score of spread (spreadZScores) not raw spread (Z_A - Z_B)
+ * 
  * Steps:
- * 1. Calculate individual Z-scores for both stocks
- * 2. Calculate spread = Z_A - Z_B
+ * 1. Calculate individual Z-scores for both stocks using sample std dev
+ * 2. Calculate spread = Z_A - Z_B  
  * 3. Calculate Z-score of the spread (final signal)
+ * 4. Run ADF test on the Z-score of spread to test for stationarity
  */
 const calculateGeminiEuclideanModel = (stockAPrices, stockBPrices, lookbackWindow) => {
   self.postMessage({ 
     type: "debug", 
-    message: `🧬 Gemini Euclidean Model: Processing ${stockAPrices.length} price points with ${lookbackWindow} day lookback` 
+    message: `🧬 Gemini Euclidean Model: Processing ${stockAPrices.length} price points with ${lookbackWindow} day lookback (using SAMPLE std dev to match pandas)` 
   })
   
   // Step 1: Calculate individual Z-scores for each stock
@@ -862,9 +870,11 @@ const calculateGeminiEuclideanModel = (stockAPrices, stockBPrices, lookbackWindo
     // Calculate rolling mean of spreads
     const rollingMeanSpread = windowSpreads.reduce((sum, spread) => sum + spread, 0) / windowSpreads.length
     
-    // Calculate rolling standard deviation of spreads (use population std dev to avoid division by zero)
-    const spreadVariance = windowSpreads.reduce((sum, spread) => sum + Math.pow(spread - rollingMeanSpread, 2), 0) / windowSpreads.length
-    const rollingStdDevSpread = Math.sqrt(spreadVariance)
+            // Calculate rolling standard deviation of spreads (use SAMPLE std dev to match pandas default)
+        const spreadVariance = windowSpreads.length > 1
+          ? windowSpreads.reduce((sum, spread) => sum + Math.pow(spread - rollingMeanSpread, 2), 0) / (windowSpreads.length - 1)  // N-1 for sample std dev
+          : 0
+        const rollingStdDevSpread = Math.sqrt(spreadVariance)
     
     // Calculate Z-score of current spread (this is our trading signal!)
     const currentSpread = spreads[i]
@@ -894,8 +904,8 @@ const calculateGeminiEuclideanModel = (stockAPrices, stockBPrices, lookbackWindo
   }
 }
 
-// KALMAN FILTER DEBUG VERSION - Updated at 2024-12-23 15:45:00
-console.log("🚀 ENHANCED WORKER LOADED - Version 2024-12-23 17:30:00 - GEMINI MODEL + TOFIXED FIXES")
+// KALMAN FILTER DEBUG VERSION - Updated at 2024-12-23 18:30:00
+console.log("🚀 ENHANCED WORKER LOADED - Version 2024-12-23 18:30:00 - GEMINI ALIGNMENT: SAMPLE STD DEV + ADF ON SPREAD Z-SCORES")
 
 // Main message handler for the worker
 self.onmessage = async (event) => {
@@ -1045,8 +1055,17 @@ self.onmessage = async (event) => {
       const correlation = calculateCorrelation(pricesA.slice(0, minLength), pricesB.slice(0, minLength))
       
       // *** KEY CHANGE: Use Enhanced WASM ADF Test ***
-      const seriesForADF = modelType === "ratio" ? ratios : modelType === "euclidean" ? spreads : spreads
-      const seriesTypeForADF = modelType === "ratio" ? "ratios" : modelType === "euclidean" ? "spreads" : "spreads"
+      // For euclidean model, use Z-score of the spread (spreadZScores) not raw spread, to match Gemini's approach
+      const seriesForADF = modelType === "ratio" ? ratios : modelType === "euclidean" ? zScores : spreads
+      const seriesTypeForADF = modelType === "ratio" ? "ratios" : modelType === "euclidean" ? "spread_z_scores" : "spreads"
+      
+      if (modelType === "euclidean") {
+        self.postMessage({ 
+          type: "debug", 
+          message: `🔬 ADF Test Input: Using Z-score of spread (spreadZScores) for euclidean model, not raw spread. Series length: ${seriesForADF.length}` 
+        })
+      }
+      
       const adfResults = await adfTestWasmEnhanced(seriesForADF, seriesTypeForADF, modelType)
       
       const halfLifeResult = calculateHalfLife(
