@@ -730,11 +730,23 @@ const adfTestWasmEnhanced = async (data, seriesType, modelType) => {
     })
 
     // *** KEY CHANGE: Use the enhanced WASM function that calculates EVERYTHING ***
+    self.postMessage({ 
+      type: "debug", 
+      message: `🔧 WASM ADF Call: Series length=${cleanData.length}, modelType='${modelType}', first 5 values=[${cleanData.slice(0, 5).map(v => v.toFixed(6)).join(', ')}]` 
+    })
+    
     const result = calculate_complete_adf_test(new Float64Array(cleanData), modelType)
 
     self.postMessage({ 
       type: "debug", 
       message: `✅ Enhanced ADF Result: t-stat=${result.test_statistic.toFixed(8)}, lags=${result.optimal_lags}, AIC=${result.aic_value.toFixed(3)}, p-value=${result.p_value.toFixed(6)}` 
+    })
+    
+    // Log critical values for comparison
+    const criticalVals = result.critical_values
+    self.postMessage({ 
+      type: "debug", 
+      message: `🎯 ADF Critical Values: 1%=${criticalVals['1%']?.toFixed(6)}, 5%=${criticalVals['5%']?.toFixed(6)}, 10%=${criticalVals['10%']?.toFixed(6)}` 
     })
 
     return {
@@ -904,8 +916,8 @@ const calculateGeminiEuclideanModel = (stockAPrices, stockBPrices, lookbackWindo
   }
 }
 
-// KALMAN FILTER DEBUG VERSION - Updated at 2024-12-23 18:30:00
-console.log("🚀 ENHANCED WORKER LOADED - Version 2024-12-23 18:30:00 - GEMINI ALIGNMENT: SAMPLE STD DEV + ADF ON SPREAD Z-SCORES")
+// KALMAN FILTER DEBUG VERSION - Updated at 2024-12-23 19:00:00
+console.log("🚀 ENHANCED WORKER LOADED - Version 2024-12-23 19:00:00 - ADF DEBUG: DETAILED LOGGING + STANDARD MODEL TYPES")
 
 // Main message handler for the worker
 self.onmessage = async (event) => {
@@ -1059,14 +1071,53 @@ self.onmessage = async (event) => {
       const seriesForADF = modelType === "ratio" ? ratios : modelType === "euclidean" ? zScores : spreads
       const seriesTypeForADF = modelType === "ratio" ? "ratios" : modelType === "euclidean" ? "spread_z_scores" : "spreads"
       
+      // Convert model type to standard ADF model specification
+      // The WASM function likely expects standard econometric model types, not our custom model names
+      const adfModelType = modelType === "euclidean" ? "constant" : modelType === "ratio" ? "constant" : "constant"
+      
       if (modelType === "euclidean") {
         self.postMessage({ 
           type: "debug", 
-          message: `🔬 ADF Test Input: Using Z-score of spread (spreadZScores) for euclidean model, not raw spread. Series length: ${seriesForADF.length}` 
+          message: `🔬 ADF Test Input: Using Z-score of spread (spreadZScores) for euclidean model, not raw spread. Series length: ${seriesForADF.length}, ADF model type: '${adfModelType}'` 
+        })
+        
+        // Log detailed ADF input for debugging
+        const validADFData = seriesForADF.filter(val => isFinite(val) && !isNaN(val))
+        const firstFew = validADFData.slice(0, 10)
+        const lastFew = validADFData.slice(-10)
+        
+        self.postMessage({ 
+          type: "debug", 
+          message: `📊 ADF Input Data: Valid points: ${validADFData.length}, First 10: [${firstFew.map(v => v.toFixed(6)).join(', ')}]` 
+        })
+        self.postMessage({ 
+          type: "debug", 
+          message: `📊 ADF Input Data: Last 10: [${lastFew.map(v => v.toFixed(6)).join(', ')}]` 
+        })
+        
+        // Calculate and log first differences for manual verification
+        const firstDifferences = []
+        for (let i = 1; i < validADFData.length; i++) {
+          firstDifferences.push(validADFData[i] - validADFData[i-1])
+        }
+        const firstDiffSample = firstDifferences.slice(0, 10)
+        self.postMessage({ 
+          type: "debug", 
+          message: `📊 First Differences (Δy): First 10: [${firstDiffSample.map(v => v.toFixed(6)).join(', ')}]` 
+        })
+        
+        // Log basic statistics of the series
+        const mean = validADFData.reduce((sum, val) => sum + val, 0) / validADFData.length
+        const variance = validADFData.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / validADFData.length
+        const stdDev = Math.sqrt(variance)
+        
+        self.postMessage({ 
+          type: "debug", 
+          message: `📊 ADF Series Stats: Mean=${mean.toFixed(6)}, StdDev=${stdDev.toFixed(6)}, Min=${Math.min(...validADFData).toFixed(6)}, Max=${Math.max(...validADFData).toFixed(6)}` 
         })
       }
       
-      const adfResults = await adfTestWasmEnhanced(seriesForADF, seriesTypeForADF, modelType)
+      const adfResults = await adfTestWasmEnhanced(seriesForADF, seriesTypeForADF, adfModelType)
       
       const halfLifeResult = calculateHalfLife(
         modelType === "ratio" ? ratios : modelType === "euclidean" ? spreads : spreads,

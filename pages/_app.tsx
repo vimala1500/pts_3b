@@ -16,7 +16,7 @@ export function getCalculationsWorker(): Worker {
   if (!calculationsWorker) {
     console.log("Instantiating calculations worker (first access)...")
     // Add cache-busting parameter to force reload of updated worker
-    const cacheBuster = `?v=${Date.now()}_gemini_alignment_fix`
+    const cacheBuster = `?v=${Date.now()}_adf_debug_detailed`
     calculationsWorker = new Worker(`/workers/calculations-worker.js${cacheBuster}`, { type: "module" })
     // Attach global message/error handlers for debugging or general worker status
     calculationsWorker.onmessage = (event) => {
