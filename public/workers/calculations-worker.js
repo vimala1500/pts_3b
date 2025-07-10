@@ -783,6 +783,15 @@ const calculateIndividualZScores = (prices, lookbackWindow) => {
     message: `🔍 Individual Z-Score Debug: Processing ${prices.length} prices with lookback ${lookbackWindow}. First 5 prices: [${prices.slice(0, 5).join(', ')}]` 
   })
   
+  // Log some specific price points for direct comparison with Gemini
+  if (prices.length >= lookbackWindow + 10) {
+    const comparisonIndices = [lookbackWindow - 1, lookbackWindow, lookbackWindow + 1, lookbackWindow + 2, lookbackWindow + 3]
+    self.postMessage({ 
+      type: "debug", 
+      message: `🔍 COMPARISON POINTS - Raw prices at indices [${comparisonIndices.join(', ')}]: [${comparisonIndices.map(idx => prices[idx].toFixed(2)).join(', ')}]` 
+    })
+  }
+  
   for (let i = 0; i < prices.length; i++) {
     if (i < lookbackWindow - 1) {
       // Not enough data for rolling calculation
@@ -810,7 +819,15 @@ const calculateIndividualZScores = (prices, lookbackWindow) => {
       const sampleStd = Math.sqrt(sumSquaredDiffs / (windowPrices.length - 1))  // N-1
       self.postMessage({ 
         type: "debug", 
-        message: `🔍 STD DEV VERIFICATION: Population (÷${windowPrices.length})=${populationStd.toFixed(6)}, Sample (÷${windowPrices.length - 1})=${sampleStd.toFixed(6)}, Using=${rollingStdDev.toFixed(6)}` 
+        message: `🔍 STD DEV VERIFICATION (Stock): Population (÷${windowPrices.length})=${populationStd.toFixed(6)}, Sample (÷${windowPrices.length - 1})=${sampleStd.toFixed(6)}, Using=${rollingStdDev.toFixed(6)}` 
+      })
+      
+      // Also calculate what the Z-score would be with population vs sample std dev
+      const zScoreWithPopulation = (currentPrice - rollingMean) / populationStd
+      const zScoreWithSample = (currentPrice - rollingMean) / sampleStd
+      self.postMessage({ 
+        type: "debug", 
+        message: `🔍 Z-SCORE COMPARISON: With Population Std=${zScoreWithPopulation.toFixed(6)}, With Sample Std=${zScoreWithSample.toFixed(6)}, Actual Used=${zScore.toFixed(6)}` 
       })
     }
     
@@ -886,6 +903,17 @@ const calculateGeminiEuclideanModel = (stockAPrices, stockBPrices, lookbackWindo
   self.postMessage({ 
     type: "debug", 
     message: `   Raw spreads (Z_A - Z_B, first 10): [${spreads.slice(firstValidIndex, firstValidIndex+10).map(s => s.toFixed(6)).join(', ')}]` 
+  })
+  
+  // CRITICAL: Calculate and log the descriptive statistics of the spreads (Z_A - Z_B)
+  const validSpreads = spreads.slice(firstValidIndex).filter(s => isFinite(s) && !isNaN(s))
+  const meanDistance = validSpreads.reduce((sum, s) => sum + s, 0) / validSpreads.length
+  const spreadVarianceDescriptive = validSpreads.reduce((sum, s) => sum + Math.pow(s - meanDistance, 2), 0) / (validSpreads.length - 1)
+  const stdDevDistance = Math.sqrt(spreadVarianceDescriptive)
+  
+  self.postMessage({ 
+    type: "debug", 
+    message: `📊 DESCRIPTIVE STATS of Z_A - Z_B spreads: Mean Distance=${meanDistance.toFixed(6)}, Std Dev Distance=${stdDevDistance.toFixed(6)}, Valid spreads count=${validSpreads.length}` 
   })
   
   // DEBUG: Check the raw prices used for first few calculations
@@ -989,8 +1017,8 @@ const calculateGeminiEuclideanModel = (stockAPrices, stockBPrices, lookbackWindo
   }
 }
 
-// KALMAN FILTER DEBUG VERSION - Updated at 2024-12-23 20:30:00
-console.log("🚀 ENHANCED WORKER LOADED - Version 2024-12-23 20:30:00 - DOUBLE ROLLING WINDOW FIX: SPREAD Z-SCORES NOW PROPERLY CALCULATED")
+// KALMAN FILTER DEBUG VERSION - Updated at 2024-12-23 21:00:00
+console.log("🚀 ENHANCED WORKER LOADED - Version 2024-12-23 21:00:00 - INDIVIDUAL Z-SCORE VERIFICATION: CHECKING DESCRIPTIVE STATS")
 
 // Main message handler for the worker
 self.onmessage = async (event) => {
