@@ -861,24 +861,14 @@ const calculateIndividualZScores = (prices, lookbackWindow) => {
 }
 
 /**
- * Calculate Gemini's Z-Score Based Euclidean Model
- * 
- * IMPORTANT CHANGES TO MATCH GEMINI AI IMPLEMENTATION:
- * 1. Uses SAMPLE standard deviation (÷N-1) instead of population std dev (÷N) to match pandas default
- * 2. ADF test is performed on Z-score of spread (spreadZScores) not raw spread (Z_A - Z_B)
+ * Calculate Euclidean Distance Model using Z-Score approach
  * 
  * Steps:
- * 1. Calculate individual Z-scores for both stocks using sample std dev
+ * 1. Calculate individual Z-scores for both stocks
  * 2. Calculate spread = Z_A - Z_B  
  * 3. Calculate Z-score of the spread (final signal)
- * 4. Run ADF test on the Z-score of spread to test for stationarity
  */
 const calculateGeminiEuclideanModel = (stockAPrices, stockBPrices, lookbackWindow) => {
-  self.postMessage({ 
-    type: "debug", 
-    message: `🧬 Gemini Euclidean Model: Processing ${stockAPrices.length} price points with ${lookbackWindow} day lookback (using SAMPLE std dev to match pandas)` 
-  })
-  
   // Step 1: Calculate individual Z-scores for each stock
   const zScoresA = calculateIndividualZScores(stockAPrices, lookbackWindow)
   const zScoresB = calculateIndividualZScores(stockBPrices, lookbackWindow)
@@ -886,81 +876,39 @@ const calculateGeminiEuclideanModel = (stockAPrices, stockBPrices, lookbackWindo
   // Step 2: Calculate spread = Z_A - Z_B
   const spreads = zScoresA.map((zA, i) => zA - zScoresB[i])
   
-  // Debug: Individual Z-scores at first valid calculation point
-  const firstValidIndex = lookbackWindow - 1
-  self.postMessage({ 
-    type: "debug", 
-    message: `🔍 Spread Debug: First 5 Z_A: [${zScoresA.slice(firstValidIndex, firstValidIndex+5).map(z => z.toFixed(3)).join(', ')}]` 
-  })
-  self.postMessage({ 
-    type: "debug", 
-    message: `🔍 Spread Debug: First 5 Z_B: [${zScoresB.slice(firstValidIndex, firstValidIndex+5).map(z => z.toFixed(3)).join(', ')}]` 
-  })
-  self.postMessage({ 
-    type: "debug", 
-    message: `🔍 Spread Debug: First 5 spreads: [${spreads.slice(firstValidIndex, firstValidIndex+5).map(s => s.toFixed(3)).join(', ')}]` 
-  })
-
-  
   // Step 3: Calculate Z-score of the spread (final trading signal)
   const spreadZScores = []
   
   for (let i = 0; i < spreads.length; i++) {
-    // CRITICAL FIX: Need double lookback window for spread Z-scores
-    // First lookback for individual Z-scores, second lookback for spread Z-scores
-    const requiredValidSpreads = lookbackWindow
+    // Need double lookback window for spread Z-scores
     const firstValidSpreadIndex = lookbackWindow - 1  // When spreads start being valid
     const firstValidSpreadZScoreIndex = firstValidSpreadIndex + lookbackWindow - 1  // When we have enough valid spreads
     
     if (i < firstValidSpreadZScoreIndex) {
-      // Not enough VALID spread data for rolling calculation
+      // Not enough valid spread data for rolling calculation
       spreadZScores.push(0)
       continue
     }
     
-    // Get rolling window of VALID spreads only (skip the initial zeros/NaNs)
-    const validSpreadsStartIndex = firstValidSpreadIndex  // Index 59 for 60-day lookback
+    // Get rolling window of valid spreads only
+    const validSpreadsStartIndex = firstValidSpreadIndex
     const windowStart = Math.max(validSpreadsStartIndex, i - lookbackWindow + 1)
     const windowSpreads = spreads.slice(windowStart, i + 1)
     
-    // Debug the double rolling effect
-    if (i === firstValidSpreadZScoreIndex) {
-      self.postMessage({ 
-        type: "debug", 
-        message: `🚨 First valid spread Z-score at index ${i} (day ${i + 1}), window length=${windowSpreads.length}` 
-      })
-    }
-    
-    // Calculate rolling mean of spreads
+    // Calculate rolling mean and std dev of spreads
     const rollingMeanSpread = windowSpreads.reduce((sum, spread) => sum + spread, 0) / windowSpreads.length
     
-            // Calculate rolling standard deviation of spreads (use SAMPLE std dev to match pandas default)
-        const spreadVariance = windowSpreads.length > 1
-          ? windowSpreads.reduce((sum, spread) => sum + Math.pow(spread - rollingMeanSpread, 2), 0) / (windowSpreads.length - 1)  // N-1 for sample std dev
-          : 0
-        const rollingStdDevSpread = Math.sqrt(spreadVariance)
-        
-
+    const spreadVariance = windowSpreads.length > 1
+      ? windowSpreads.reduce((sum, spread) => sum + Math.pow(spread - rollingMeanSpread, 2), 0) / (windowSpreads.length - 1)
+      : 0
+    const rollingStdDevSpread = Math.sqrt(spreadVariance)
     
-    // Calculate Z-score of current spread (this is our trading signal!)
+    // Calculate Z-score of current spread
     const currentSpread = spreads[i]
     const spreadZScore = rollingStdDevSpread > 0 ? (currentSpread - rollingMeanSpread) / rollingStdDevSpread : 0
     
-    // Debug first few spread Z-score calculations
-    if (i >= firstValidSpreadZScoreIndex && i < firstValidSpreadZScoreIndex + 3) {
-      self.postMessage({ 
-        type: "debug", 
-        message: `🎯 SpreadZ[${i}]: spread=${currentSpread.toFixed(3)}, zScore=${spreadZScore.toFixed(3)}` 
-      })
-    }
-    
     spreadZScores.push(spreadZScore)
   }
-  
-  self.postMessage({ 
-    type: "debug", 
-    message: `✅ Gemini Model Complete: Generated ${spreadZScores.length} spread Z-scores. Range: [${Math.min(...spreadZScores.filter(z => !isNaN(z))).toFixed(3)}, ${Math.max(...spreadZScores.filter(z => !isNaN(z))).toFixed(3)}]` 
-  })
   
   return {
     individualZScoresA: zScoresA,
@@ -970,8 +918,8 @@ const calculateGeminiEuclideanModel = (stockAPrices, stockBPrices, lookbackWindo
   }
 }
 
-// Euclidean Model Enhanced Worker
-console.log("🚀 Enhanced Worker Loaded - Double Rolling Window Fix Applied")
+// Euclidean Model Worker - Reverted Clean Version
+console.log("🚀 Worker Loaded - Double Rolling Window (Clean Version)")
 
 // Main message handler for the worker
 self.onmessage = async (event) => {
@@ -1073,19 +1021,16 @@ self.onmessage = async (event) => {
           )
         }
       } else if (modelType === "euclidean") {
-        // *** GEMINI'S Z-SCORE BASED EUCLIDEAN MODEL ***
-        self.postMessage({ type: "debug", message: "🧬 Using Gemini's Z-Score Based Euclidean Model" })
+        const euclideanResults = calculateGeminiEuclideanModel(stockAPrices, stockBPrices, euclideanLookbackWindow)
         
-        const geminiResults = calculateGeminiEuclideanModel(stockAPrices, stockBPrices, euclideanLookbackWindow)
+        // Extract results
+        const individualZScoresA = euclideanResults.individualZScoresA
+        const individualZScoresB = euclideanResults.individualZScoresB
+        spreads = euclideanResults.spreads  // This is Z_A - Z_B
+        zScores = euclideanResults.spreadZScores  // This is the Z-score of the spread
         
-        // Extract results from Gemini model
-        const individualZScoresA = geminiResults.individualZScoresA
-        const individualZScoresB = geminiResults.individualZScoresB
-        spreads = geminiResults.spreads  // This is Z_A - Z_B
-        zScores = geminiResults.spreadZScores  // This is the Z-score of the spread (our trading signal!)
-        
-        // Store individual Z-scores in distances array for compatibility with existing code
-        distances = spreads  // Use spreads instead of old distance calculation
+        // Store individual Z-scores in distances array for compatibility
+        distances = spreads
         
         // Calculate rolling half-lives using the spreads
         rollingHalfLifes = calculateRollingHalfLife(spreads, euclideanLookbackWindow)
@@ -1100,13 +1045,8 @@ self.onmessage = async (event) => {
         }
         
         // Store individual Z-scores for table display
-        alphas = individualZScoresA  // Reusing alphas array to store individual Z-scores for Stock A
-        hedgeRatios = individualZScoresB  // Reusing hedgeRatios array to store individual Z-scores for Stock B
-        
-        self.postMessage({ 
-          type: "debug", 
-          message: `📊 Gemini Results: Mean spread=${meanValue.toFixed(3)}, StdDev=${stdDevValue.toFixed(3)}` 
-        })
+        alphas = individualZScoresA
+        hedgeRatios = individualZScoresB
       }
 
       const validZScores = zScores.filter((z) => !isNaN(z))
@@ -1120,37 +1060,14 @@ self.onmessage = async (event) => {
       let seriesForADF = modelType === "ratio" ? ratios : modelType === "euclidean" ? zScores : spreads
       const seriesTypeForADF = modelType === "ratio" ? "ratios" : modelType === "euclidean" ? "spread_z_scores" : "spreads"
       
-      // CRITICAL FIX: For euclidean model, remove the DOUBLE warmup period before ADF test
-      // This matches Gemini's approach of using .dropna() to exclude NaN values
+      // For euclidean model, remove the double warmup period before ADF test
       if (modelType === "euclidean") {
         const lookbackWindow = euclideanLookbackWindow
-        // DOUBLE ROLLING EFFECT: Need to remove (2 * lookbackWindow - 2) initial values
-        // First warmup: individual Z-scores need (lookbackWindow - 1) values
-        // Second warmup: spread Z-scores need another (lookbackWindow - 1) valid spread values
-        const doubleWarmupPeriod = 2 * lookbackWindow - 2  // e.g., 2*60-2 = 118 for 60-day lookback
-        const firstValidSpreadZScoreIndex = doubleWarmupPeriod  // Index 118 for 60-day lookback (day 119)
-        
-        // Start from the first valid spread Z-score calculation
-        seriesForADF = zScores.slice(firstValidSpreadZScoreIndex).filter(val => isFinite(val) && !isNaN(val))
-        
-        self.postMessage({ 
-          type: "debug", 
-          message: `🚨 ADF Double Warmup: Removed ${doubleWarmupPeriod} values, ADF series length: ${seriesForADF.length}` 
-        })
+        const doubleWarmupPeriod = 2 * lookbackWindow - 2
+        seriesForADF = zScores.slice(doubleWarmupPeriod).filter(val => isFinite(val) && !isNaN(val))
       }
       
-      // Convert model type to standard ADF model specification
-      // The WASM function likely expects standard econometric model types, not our custom model names
-      const adfModelType = modelType === "euclidean" ? "constant" : modelType === "ratio" ? "constant" : "constant"
-      
-      if (modelType === "euclidean") {
-        self.postMessage({ 
-          type: "debug", 
-          message: `🔬 ADF Test Input: Using VALID spread Z-scores (warmup period removed) for euclidean model. Series length: ${seriesForADF.length}, ADF model type: '${adfModelType}'` 
-        })
-        
-
-      }
+      const adfModelType = "constant"
       
       const adfResults = await adfTestWasmEnhanced(seriesForADF, seriesTypeForADF, adfModelType)
       
