@@ -730,11 +730,23 @@ const adfTestWasmEnhanced = async (data, seriesType, modelType) => {
     })
 
     // *** KEY CHANGE: Use the enhanced WASM function that calculates EVERYTHING ***
+    self.postMessage({ 
+      type: "debug", 
+      message: `🔧 WASM ADF Call: Series length=${cleanData.length}, modelType='${modelType}', first 5 values=[${cleanData.slice(0, 5).map(v => v.toFixed(6)).join(', ')}]` 
+    })
+    
     const result = calculate_complete_adf_test(new Float64Array(cleanData), modelType)
 
     self.postMessage({ 
       type: "debug", 
       message: `✅ Enhanced ADF Result: t-stat=${result.test_statistic.toFixed(8)}, lags=${result.optimal_lags}, AIC=${result.aic_value.toFixed(3)}, p-value=${result.p_value.toFixed(6)}` 
+    })
+    
+    // Log critical values for comparison
+    const criticalVals = result.critical_values
+    self.postMessage({ 
+      type: "debug", 
+      message: `🎯 ADF Critical Values: 1%=${criticalVals['1%']?.toFixed(6)}, 5%=${criticalVals['5%']?.toFixed(6)}, 10%=${criticalVals['10%']?.toFixed(6)}` 
     })
 
     return {
@@ -785,20 +797,39 @@ const calculateIndividualZScores = (prices, lookbackWindow) => {
     // Calculate rolling mean
     const rollingMean = windowPrices.reduce((sum, price) => sum + price, 0) / windowPrices.length
     
-    // Calculate rolling standard deviation (use population std dev to avoid division by zero)
-    const variance = windowPrices.reduce((sum, price) => sum + Math.pow(price - rollingMean, 2), 0) / windowPrices.length
+    // Calculate rolling standard deviation (use SAMPLE std dev to match pandas default)
+    const variance = windowPrices.length > 1 
+      ? windowPrices.reduce((sum, price) => sum + Math.pow(price - rollingMean, 2), 0) / (windowPrices.length - 1)  // N-1 for sample std dev
+      : 0
     const rollingStdDev = Math.sqrt(variance)
+    
+    // VERIFY: Double-check that we're using sample std dev for first calculation
+    if (i === lookbackWindow - 1) {
+      const sumSquaredDiffs = windowPrices.reduce((sum, price) => sum + Math.pow(price - rollingMean, 2), 0)
+      const populationStd = Math.sqrt(sumSquaredDiffs / windowPrices.length)  // N
+      const sampleStd = Math.sqrt(sumSquaredDiffs / (windowPrices.length - 1))  // N-1
+      self.postMessage({ 
+        type: "debug", 
+        message: `🔍 STD DEV VERIFICATION: Population (÷${windowPrices.length})=${populationStd.toFixed(6)}, Sample (÷${windowPrices.length - 1})=${sampleStd.toFixed(6)}, Using=${rollingStdDev.toFixed(6)}` 
+      })
+    }
     
     // Calculate Z-score for current price
     const currentPrice = prices[i]
     const zScore = rollingStdDev > 0 ? (currentPrice - rollingMean) / rollingStdDev : 0
     
-    // Debug first few calculations
-    if (i < lookbackWindow + 3) {
+    // Debug first few calculations with MORE detail
+    if (i >= lookbackWindow - 1 && i < lookbackWindow + 5) {
       self.postMessage({ 
         type: "debug", 
-        message: `🔢 Z-Score[${i}]: price=${currentPrice.toFixed(2)}, mean=${rollingMean.toFixed(2)}, std=${rollingStdDev.toFixed(4)}, z=${zScore.toFixed(4)}` 
+        message: `🔢 Z-Score[${i}]: price=${currentPrice.toFixed(2)}, mean=${rollingMean.toFixed(6)}, std=${rollingStdDev.toFixed(6)}, z=${zScore.toFixed(6)} | window length=${windowPrices.length}` 
       })
+      if (i === lookbackWindow - 1) {
+        self.postMessage({ 
+          type: "debug", 
+          message: `   📊 First calculation window [${i - lookbackWindow + 1} to ${i}]: [${windowPrices.map(p => p.toFixed(2)).join(', ')}]` 
+        })
+      }
     }
     
     zScores.push(zScore)
@@ -814,15 +845,21 @@ const calculateIndividualZScores = (prices, lookbackWindow) => {
 
 /**
  * Calculate Gemini's Z-Score Based Euclidean Model
+ * 
+ * IMPORTANT CHANGES TO MATCH GEMINI AI IMPLEMENTATION:
+ * 1. Uses SAMPLE standard deviation (÷N-1) instead of population std dev (÷N) to match pandas default
+ * 2. ADF test is performed on Z-score of spread (spreadZScores) not raw spread (Z_A - Z_B)
+ * 
  * Steps:
- * 1. Calculate individual Z-scores for both stocks
- * 2. Calculate spread = Z_A - Z_B
+ * 1. Calculate individual Z-scores for both stocks using sample std dev
+ * 2. Calculate spread = Z_A - Z_B  
  * 3. Calculate Z-score of the spread (final signal)
+ * 4. Run ADF test on the Z-score of spread to test for stationarity
  */
 const calculateGeminiEuclideanModel = (stockAPrices, stockBPrices, lookbackWindow) => {
   self.postMessage({ 
     type: "debug", 
-    message: `🧬 Gemini Euclidean Model: Processing ${stockAPrices.length} price points with ${lookbackWindow} day lookback` 
+    message: `🧬 Gemini Euclidean Model: Processing ${stockAPrices.length} price points with ${lookbackWindow} day lookback (using SAMPLE std dev to match pandas)` 
   })
   
   // Step 1: Calculate individual Z-scores for each stock
@@ -832,50 +869,108 @@ const calculateGeminiEuclideanModel = (stockAPrices, stockBPrices, lookbackWindo
   // Step 2: Calculate spread = Z_A - Z_B
   const spreads = zScoresA.map((zA, i) => zA - zScoresB[i])
   
+  // DETAILED DEBUG: Individual Z-scores at first valid calculation point
+  const firstValidIndex = lookbackWindow - 1
   self.postMessage({ 
     type: "debug", 
-    message: `🔍 Spread Debug: First 5 Z_A: [${zScoresA.slice(lookbackWindow-1, lookbackWindow+4).map(z => z.toFixed(3)).join(', ')}]` 
+    message: `🔍 INDIVIDUAL Z-SCORES at first valid index (${firstValidIndex}):` 
   })
   self.postMessage({ 
     type: "debug", 
-    message: `🔍 Spread Debug: First 5 Z_B: [${zScoresB.slice(lookbackWindow-1, lookbackWindow+4).map(z => z.toFixed(3)).join(', ')}]` 
+    message: `   Stock A Z-scores (first 10 valid): [${zScoresA.slice(firstValidIndex, firstValidIndex+10).map(z => z.toFixed(6)).join(', ')}]` 
   })
   self.postMessage({ 
     type: "debug", 
-    message: `🔍 Spread Debug: First 5 spreads: [${spreads.slice(lookbackWindow-1, lookbackWindow+4).map(s => s.toFixed(3)).join(', ')}]` 
+    message: `   Stock B Z-scores (first 10 valid): [${zScoresB.slice(firstValidIndex, firstValidIndex+10).map(z => z.toFixed(6)).join(', ')}]` 
+  })
+  self.postMessage({ 
+    type: "debug", 
+    message: `   Raw spreads (Z_A - Z_B, first 10): [${spreads.slice(firstValidIndex, firstValidIndex+10).map(s => s.toFixed(6)).join(', ')}]` 
+  })
+  
+  // DEBUG: Check the raw prices used for first few calculations
+  self.postMessage({ 
+    type: "debug", 
+    message: `🔍 RAW PRICES at first valid calculation:` 
+  })
+  self.postMessage({ 
+    type: "debug", 
+    message: `   Stock A prices [${firstValidIndex-4} to ${firstValidIndex+5}]: [${stockAPrices.slice(firstValidIndex-4, firstValidIndex+6).map(p => p.toFixed(2)).join(', ')}]` 
+  })
+  self.postMessage({ 
+    type: "debug", 
+    message: `   Stock B prices [${firstValidIndex-4} to ${firstValidIndex+5}]: [${stockBPrices.slice(firstValidIndex-4, firstValidIndex+6).map(p => p.toFixed(2)).join(', ')}]` 
   })
   
   // Step 3: Calculate Z-score of the spread (final trading signal)
   const spreadZScores = []
   
   for (let i = 0; i < spreads.length; i++) {
-    if (i < lookbackWindow - 1) {
-      // Not enough data for rolling calculation
+    // CRITICAL FIX: Need double lookback window for spread Z-scores
+    // First lookback for individual Z-scores, second lookback for spread Z-scores
+    const requiredValidSpreads = lookbackWindow
+    const firstValidSpreadIndex = lookbackWindow - 1  // When spreads start being valid
+    const firstValidSpreadZScoreIndex = firstValidSpreadIndex + lookbackWindow - 1  // When we have enough valid spreads
+    
+    if (i < firstValidSpreadZScoreIndex) {
+      // Not enough VALID spread data for rolling calculation
       spreadZScores.push(0)
       continue
     }
     
-    // Get rolling window of spreads
-    const windowStart = Math.max(0, i - lookbackWindow + 1)
+    // Get rolling window of VALID spreads only (skip the initial zeros/NaNs)
+    const validSpreadsStartIndex = firstValidSpreadIndex  // Index 59 for 60-day lookback
+    const windowStart = Math.max(validSpreadsStartIndex, i - lookbackWindow + 1)
     const windowSpreads = spreads.slice(windowStart, i + 1)
+    
+    // Debug the double rolling effect
+    if (i === firstValidSpreadZScoreIndex) {
+      self.postMessage({ 
+        type: "debug", 
+        message: `🚨 DOUBLE ROLLING FIX: First valid spread Z-score at index ${i} (day ${i + 1}). lookbackWindow=${lookbackWindow}, firstValidSpread=${firstValidSpreadIndex}, windowStart=${windowStart}` 
+      })
+      self.postMessage({ 
+        type: "debug", 
+        message: `   Using spread window [${windowStart}:${i}], length=${windowSpreads.length}, values=[${windowSpreads.map(s => s.toFixed(6)).join(', ')}]` 
+      })
+    }
     
     // Calculate rolling mean of spreads
     const rollingMeanSpread = windowSpreads.reduce((sum, spread) => sum + spread, 0) / windowSpreads.length
     
-    // Calculate rolling standard deviation of spreads (use population std dev to avoid division by zero)
-    const spreadVariance = windowSpreads.reduce((sum, spread) => sum + Math.pow(spread - rollingMeanSpread, 2), 0) / windowSpreads.length
-    const rollingStdDevSpread = Math.sqrt(spreadVariance)
+            // Calculate rolling standard deviation of spreads (use SAMPLE std dev to match pandas default)
+        const spreadVariance = windowSpreads.length > 1
+          ? windowSpreads.reduce((sum, spread) => sum + Math.pow(spread - rollingMeanSpread, 2), 0) / (windowSpreads.length - 1)  // N-1 for sample std dev
+          : 0
+        const rollingStdDevSpread = Math.sqrt(spreadVariance)
+        
+        // VERIFY: Double-check that we're using sample std dev for spread calculation too
+        if (i === lookbackWindow - 1) {
+          const sumSquaredDiffs = windowSpreads.reduce((sum, spread) => sum + Math.pow(spread - rollingMeanSpread, 2), 0)
+          const populationStd = Math.sqrt(sumSquaredDiffs / windowSpreads.length)  // N
+          const sampleStd = Math.sqrt(sumSquaredDiffs / (windowSpreads.length - 1))  // N-1
+          self.postMessage({ 
+            type: "debug", 
+            message: `🔍 SPREAD STD DEV VERIFICATION: Population (÷${windowSpreads.length})=${populationStd.toFixed(6)}, Sample (÷${windowSpreads.length - 1})=${sampleStd.toFixed(6)}, Using=${rollingStdDevSpread.toFixed(6)}` 
+          })
+        }
     
     // Calculate Z-score of current spread (this is our trading signal!)
     const currentSpread = spreads[i]
     const spreadZScore = rollingStdDevSpread > 0 ? (currentSpread - rollingMeanSpread) / rollingStdDevSpread : 0
     
-    // Debug first few spread Z-score calculations
-    if (i < lookbackWindow + 3) {
+    // Debug first few spread Z-score calculations with MORE detail
+    if (i >= firstValidSpreadZScoreIndex && i < firstValidSpreadZScoreIndex + 5) {
       self.postMessage({ 
         type: "debug", 
-        message: `🎯 SpreadZ[${i}]: spread=${currentSpread.toFixed(4)}, meanSpr=${rollingMeanSpread.toFixed(4)}, stdSpr=${rollingStdDevSpread.toFixed(4)}, zSpr=${spreadZScore.toFixed(4)}` 
+        message: `🎯 SpreadZ[${i}] (Day ${i + 1}): spread=${currentSpread.toFixed(6)}, meanSpr=${rollingMeanSpread.toFixed(6)}, stdSpr=${rollingStdDevSpread.toFixed(6)}, zSpr=${spreadZScore.toFixed(6)} | window length=${windowSpreads.length}` 
       })
+      if (i === firstValidSpreadZScoreIndex) {
+        self.postMessage({ 
+          type: "debug", 
+          message: `   📊 FIRST VALID spread Z-score calculation window [${windowStart} to ${i}]: [${windowSpreads.map(s => s.toFixed(6)).join(', ')}]` 
+        })
+      }
     }
     
     spreadZScores.push(spreadZScore)
@@ -894,8 +989,8 @@ const calculateGeminiEuclideanModel = (stockAPrices, stockBPrices, lookbackWindo
   }
 }
 
-// KALMAN FILTER DEBUG VERSION - Updated at 2024-12-23 15:45:00
-console.log("🚀 ENHANCED WORKER LOADED - Version 2024-12-23 17:30:00 - GEMINI MODEL + TOFIXED FIXES")
+// KALMAN FILTER DEBUG VERSION - Updated at 2024-12-23 20:30:00
+console.log("🚀 ENHANCED WORKER LOADED - Version 2024-12-23 20:30:00 - DOUBLE ROLLING WINDOW FIX: SPREAD Z-SCORES NOW PROPERLY CALCULATED")
 
 // Main message handler for the worker
 self.onmessage = async (event) => {
@@ -1045,9 +1140,83 @@ self.onmessage = async (event) => {
       const correlation = calculateCorrelation(pricesA.slice(0, minLength), pricesB.slice(0, minLength))
       
       // *** KEY CHANGE: Use Enhanced WASM ADF Test ***
-      const seriesForADF = modelType === "ratio" ? ratios : modelType === "euclidean" ? spreads : spreads
-      const seriesTypeForADF = modelType === "ratio" ? "ratios" : modelType === "euclidean" ? "spreads" : "spreads"
-      const adfResults = await adfTestWasmEnhanced(seriesForADF, seriesTypeForADF, modelType)
+      // For euclidean model, use Z-score of the spread (spreadZScores) not raw spread, to match Gemini's approach
+      let seriesForADF = modelType === "ratio" ? ratios : modelType === "euclidean" ? zScores : spreads
+      const seriesTypeForADF = modelType === "ratio" ? "ratios" : modelType === "euclidean" ? "spread_z_scores" : "spreads"
+      
+      // CRITICAL FIX: For euclidean model, remove the DOUBLE warmup period before ADF test
+      // This matches Gemini's approach of using .dropna() to exclude NaN values
+      if (modelType === "euclidean") {
+        const lookbackWindow = euclideanLookbackWindow
+        // DOUBLE ROLLING EFFECT: Need to remove (2 * lookbackWindow - 2) initial values
+        // First warmup: individual Z-scores need (lookbackWindow - 1) values
+        // Second warmup: spread Z-scores need another (lookbackWindow - 1) valid spread values
+        const doubleWarmupPeriod = 2 * lookbackWindow - 2  // e.g., 2*60-2 = 118 for 60-day lookback
+        const firstValidSpreadZScoreIndex = doubleWarmupPeriod  // Index 118 for 60-day lookback (day 119)
+        
+        // Start from the first valid spread Z-score calculation
+        seriesForADF = zScores.slice(firstValidSpreadZScoreIndex).filter(val => isFinite(val) && !isNaN(val))
+        
+        self.postMessage({ 
+          type: "debug", 
+          message: `🚨 DOUBLE ROLLING FIX FOR ADF: Original length: ${zScores.length}, Double warmup removed: ${doubleWarmupPeriod}, Valid ADF series length: ${seriesForADF.length}` 
+        })
+        self.postMessage({ 
+          type: "debug", 
+          message: `🚨 Expected valid length should be: ${zScores.length - doubleWarmupPeriod} (1000 - 118 = 882 for 60-day lookback, 1000 - 358 = 642 for 180-day lookback)` 
+        })
+        self.postMessage({ 
+          type: "debug", 
+          message: `🚨 First valid spread Z-score should appear at day ${doubleWarmupPeriod + 1} (index ${doubleWarmupPeriod})` 
+        })
+      }
+      
+      // Convert model type to standard ADF model specification
+      // The WASM function likely expects standard econometric model types, not our custom model names
+      const adfModelType = modelType === "euclidean" ? "constant" : modelType === "ratio" ? "constant" : "constant"
+      
+      if (modelType === "euclidean") {
+        self.postMessage({ 
+          type: "debug", 
+          message: `🔬 ADF Test Input: Using VALID spread Z-scores (warmup period removed) for euclidean model. Series length: ${seriesForADF.length}, ADF model type: '${adfModelType}'` 
+        })
+        
+        // Log detailed ADF input for debugging
+        const firstFew = seriesForADF.slice(0, 10)
+        const lastFew = seriesForADF.slice(-10)
+        
+        self.postMessage({ 
+          type: "debug", 
+          message: `📊 ADF Input Data (VALID ONLY): Valid points: ${seriesForADF.length}, First 10: [${firstFew.map(v => v.toFixed(6)).join(', ')}]` 
+        })
+        self.postMessage({ 
+          type: "debug", 
+          message: `📊 ADF Input Data (VALID ONLY): Last 10: [${lastFew.map(v => v.toFixed(6)).join(', ')}]` 
+        })
+        
+        // Calculate and log first differences for manual verification
+        const firstDifferences = []
+        for (let i = 1; i < seriesForADF.length; i++) {
+          firstDifferences.push(seriesForADF[i] - seriesForADF[i-1])
+        }
+        const firstDiffSample = firstDifferences.slice(0, 10)
+        self.postMessage({ 
+          type: "debug", 
+          message: `📊 First Differences (Δy) VALID ONLY: First 10: [${firstDiffSample.map(v => v.toFixed(6)).join(', ')}]` 
+        })
+        
+        // Log basic statistics of the VALID series only
+        const mean = seriesForADF.reduce((sum, val) => sum + val, 0) / seriesForADF.length
+        const variance = seriesForADF.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / seriesForADF.length
+        const stdDev = Math.sqrt(variance)
+        
+        self.postMessage({ 
+          type: "debug", 
+          message: `📊 ADF Series Stats (VALID ONLY): Mean=${mean.toFixed(6)}, StdDev=${stdDev.toFixed(6)}, Min=${Math.min(...seriesForADF).toFixed(6)}, Max=${Math.max(...seriesForADF).toFixed(6)}` 
+        })
+      }
+      
+      const adfResults = await adfTestWasmEnhanced(seriesForADF, seriesTypeForADF, adfModelType)
       
       const halfLifeResult = calculateHalfLife(
         modelType === "ratio" ? ratios : modelType === "euclidean" ? spreads : spreads,
