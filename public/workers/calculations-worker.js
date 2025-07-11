@@ -675,7 +675,7 @@ const calculateHurstExponent = (data) => {
       }
 
       const range = Math.max(...cumDevs) - Math.min(...cumDevs)
-      const stdDev = Math.sqrt(series.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / lag)
+      const stdDev = Math.sqrt(series.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / (lag > 1 ? lag - 1 : lag))
 
       if (stdDev > 0) {
         rsValues.push(range / stdDev)
