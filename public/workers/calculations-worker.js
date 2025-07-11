@@ -1269,7 +1269,7 @@ self.onmessage = async (event) => {
         const windowStart = Math.max(0, i - rollingStatsWindow + 1)
         const window = dataForBands.slice(windowStart, i + 1)
         const mean = window.reduce((sum, val) => sum + val, 0) / window.length
-        const stdDev = Math.sqrt(window.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / window.length)
+        const stdDev = Math.sqrt(window.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / (window.length > 1 ? window.length - 1 : window.length))
 
         rollingMean.push(mean)
         rollingUpperBand1.push(mean + stdDev)
