@@ -1232,14 +1232,17 @@ self.onmessage = async (event) => {
              // GEMINI FIX: Use warmed-up data for euclidean model statistical calculations
        let dataForHalfLife, dataForHurst
        if (modelType === "euclidean") {
-         const firstValidSpreadIndex = euclideanLookbackWindow - 1
-         const warmedUpSpreads = spreads.slice(firstValidSpreadIndex)
-         dataForHalfLife = warmedUpSpreads
-         dataForHurst = warmedUpSpreads
+         // Use DOUBLE warm-up period (same as ADF test) - NOT single warm-up
+         const lookbackWindow = euclideanLookbackWindow
+         const doubleWarmupPeriod = 2 * lookbackWindow - 2  // Same logic as ADF test
+         const warmedUpSpreadsForStats = spreads.slice(doubleWarmupPeriod).filter(val => isFinite(val) && !isNaN(val))
+         
+         dataForHalfLife = warmedUpSpreadsForStats
+         dataForHurst = warmedUpSpreadsForStats
          
          self.postMessage({ 
            type: "debug", 
-           message: `🔧 GEMINI FIX: Half-life & Hurst using warmed-up data only. Original: ${spreads.length}, Warmed-up: ${warmedUpSpreads.length} (excluded ${firstValidSpreadIndex} warm-up points)` 
+           message: `🔧 GEMINI FIX (CORRECTED): Half-life & Hurst using DOUBLE warm-up exclusion. Original: ${spreads.length}, Warmed-up: ${warmedUpSpreadsForStats.length} (excluded ${doubleWarmupPeriod} double warm-up points)` 
          })
        } else {
          dataForHalfLife = modelType === "ratio" ? ratios : spreads
