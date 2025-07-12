@@ -675,7 +675,7 @@ const calculateHurstExponent = (data) => {
       }
 
       const range = Math.max(...cumDevs) - Math.min(...cumDevs)
-      const stdDev = Math.sqrt(series.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / lag)
+      const stdDev = Math.sqrt(series.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / (lag > 1 ? lag - 1 : lag))
 
       if (stdDev > 0) {
         rsValues.push(range / stdDev)
@@ -1109,13 +1109,19 @@ self.onmessage = async (event) => {
         // Calculate rolling half-lives using the spreads
         rollingHalfLifes = calculateRollingHalfLife(spreads, euclideanLookbackWindow)
         
-        // Calculate statistics for the spreads (Z_A - Z_B)
-        if (spreads.length > 0) {
-          meanValue = spreads.reduce((sum, val) => sum + val, 0) / spreads.length
-          const stdDevDenominator = spreads.length > 1 ? spreads.length - 1 : spreads.length
+        // GEMINI FIX: Calculate statistics only on the valid portion (excluding warm-up period zeros)
+        const firstValidSpreadIndex = euclideanLookbackWindow - 1 // First index where individual Z-scores are valid
+        const warmedUpSpreadsForStats = spreads.slice(firstValidSpreadIndex)
+        
+        if (warmedUpSpreadsForStats.length > 0) {
+          meanValue = warmedUpSpreadsForStats.reduce((sum, val) => sum + val, 0) / warmedUpSpreadsForStats.length
+          const stdDevDenominator = warmedUpSpreadsForStats.length > 1 ? warmedUpSpreadsForStats.length - 1 : warmedUpSpreadsForStats.length
           stdDevValue = Math.sqrt(
-            spreads.reduce((sum, val) => sum + Math.pow(val - meanValue, 2), 0) / stdDevDenominator,
+            warmedUpSpreadsForStats.reduce((sum, val) => sum + Math.pow(val - meanValue, 2), 0) / stdDevDenominator,
           )
+        } else {
+          meanValue = 0
+          stdDevValue = 0
         }
         
         // Store individual Z-scores for table display
@@ -1124,7 +1130,12 @@ self.onmessage = async (event) => {
         
         self.postMessage({ 
           type: "debug", 
-          message: `📊 Gemini Results: Mean spread=${meanValue.toFixed(6)}, StdDev=${stdDevValue.toFixed(6)}, Signal range=[${Math.min(...zScores.filter(z => !isNaN(z))).toFixed(3)}, ${Math.max(...zScores.filter(z => !isNaN(z))).toFixed(3)}]` 
+          message: `📊 Gemini Results (WARM-UP EXCLUDED): Mean spread=${meanValue.toFixed(6)}, StdDev=${stdDevValue.toFixed(6)}, Signal range=[${Math.min(...zScores.filter(z => !isNaN(z))).toFixed(3)}, ${Math.max(...zScores.filter(z => !isNaN(z))).toFixed(3)}]` 
+        })
+        
+        self.postMessage({ 
+          type: "debug", 
+          message: `🔧 GEMINI FIX: Using warmed-up data only. Total spreads: ${spreads.length}, Valid spreads (excluding ${firstValidSpreadIndex} warm-up): ${warmedUpSpreadsForStats.length}` 
         })
         
         self.postMessage({ 
@@ -1218,12 +1229,28 @@ self.onmessage = async (event) => {
       
       const adfResults = await adfTestWasmEnhanced(seriesForADF, seriesTypeForADF, adfModelType)
       
-      const halfLifeResult = calculateHalfLife(
-        modelType === "ratio" ? ratios : modelType === "euclidean" ? spreads : spreads,
-      )
-      const hurstExponent = calculateHurstExponent(
-        modelType === "ratio" ? ratios : modelType === "euclidean" ? spreads : spreads,
-      )
+             // GEMINI FIX: Use warmed-up data for euclidean model statistical calculations
+       let dataForHalfLife, dataForHurst
+       if (modelType === "euclidean") {
+         // Use DOUBLE warm-up period (same as ADF test) - NOT single warm-up
+         const lookbackWindow = euclideanLookbackWindow
+         const doubleWarmupPeriod = 2 * lookbackWindow - 2  // Same logic as ADF test
+         const warmedUpSpreadsForStats = spreads.slice(doubleWarmupPeriod).filter(val => isFinite(val) && !isNaN(val))
+         
+         dataForHalfLife = warmedUpSpreadsForStats
+         dataForHurst = warmedUpSpreadsForStats
+         
+         self.postMessage({ 
+           type: "debug", 
+           message: `🔧 GEMINI FIX (CORRECTED): Half-life & Hurst using DOUBLE warm-up exclusion. Original: ${spreads.length}, Warmed-up: ${warmedUpSpreadsForStats.length} (excluded ${doubleWarmupPeriod} double warm-up points)` 
+         })
+       } else {
+         dataForHalfLife = modelType === "ratio" ? ratios : spreads
+         dataForHurst = modelType === "ratio" ? ratios : spreads
+       }
+       
+       const halfLifeResult = calculateHalfLife(dataForHalfLife)
+       const hurstExponent = calculateHurstExponent(dataForHurst)
       const practicalTradeHalfLife = calculatePracticalTradeHalfLife(zScores, entryThreshold, exitThreshold)
 
       const tableData = []
@@ -1269,7 +1296,7 @@ self.onmessage = async (event) => {
         const windowStart = Math.max(0, i - rollingStatsWindow + 1)
         const window = dataForBands.slice(windowStart, i + 1)
         const mean = window.reduce((sum, val) => sum + val, 0) / window.length
-        const stdDev = Math.sqrt(window.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / window.length)
+        const stdDev = Math.sqrt(window.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / (window.length > 1 ? window.length - 1 : window.length))
 
         rollingMean.push(mean)
         rollingUpperBand1.push(mean + stdDev)
